@@ -29,67 +29,61 @@
 
 ## 1. 현재 위치
 
-- **Stage 1 ✅ 완료 → Stage 2 진입 직전**
+- **Stage 2 ✅ 완료 → Stage 3 진입 직전**
 
 ---
 
 ## 2. 마지막 작업 (2026-05-06)
 
-- Stage 1 Echo bot 구현 및 검증 완료
+- Stage 2 Gemini API 연동 구현 및 검증 완료
 - 검증된 항목 (DoD 전부 통과):
-  - `python main.py`로 봇 시작 → "Bot 시작 - Ctrl+C로 종료" 출력
-  - `/start` → 안내 메시지 회신
-  - 텍스트(한글/멀티라인 포함) → 동일 텍스트 회신
+  - `python main.py`로 봇 시작
+  - `/start` → "(Stage 2: Gemini AI)" 라벨 안내
+  - 한국어 질문 → 자연스러운 한국어 답변
+  - 영어 질문 → 영어 답변
+  - 마크다운 미사용 (시스템 프롬프트로 강제됨)
+  - **API 실패 케이스 자연 검증 (503 UNAVAILABLE + 429 RESOURCE_EXHAUSTED)**: 친화 메시지 회신 + 봇 프로세스 생존
   - `Ctrl+C` → 트레이스백 없이 정상 종료
-  - 코드 분리: 핸들러 `src/bot/handlers.py`, 환경 로딩 `src/config.py`
+  - 코드 분리: `src/services/agent.py` (LLM 호출), `src/bot/handlers.py` (호출만)
 
 ---
 
-## 3. 다음 세션 첫 작업
+## 3. 다음 세션 첫 작업 (Stage 3: 대화 기억)
 
-### 3-1. 사전 준비 (Anthropic 콘솔)
-1. [console.anthropic.com](https://console.anthropic.com) 로그인 → API Keys → 새 키 발급
-2. 발급된 키 복사 (형식: `sk-ant-...`)
-3. 결제 정보 등록 필요 (소액 prepay로 시작 권장)
+### 3-1. 사전 준비
+- 추가 키 발급/결제 없음 (Stage 2 환경 그대로 사용)
 
 ### 3-2. 환경 셋팅 (PowerShell에서)
 ```powershell
 cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
-.\venv\Scripts\Activate.ps1            # 새 터미널마다 필요 — 프롬프트에 (venv) 붙는지 확인 필수
-code .env                               # ANTHROPIC_API_KEY= 한 줄 추가하고 키 붙여넣기
-code .env.example                       # ANTHROPIC_API_KEY= (값 없이) 추가해서 템플릿 갱신
+.\venv\Scripts\Activate.ps1            # 새 터미널마다 필요 — 프롬프트에 (venv) 확인
+python main.py                          # Stage 2 봇 그대로 동작 확인
 ```
 
-### 3-3. Stage 2 결정 사항 (확정됨)
-
-| 항목 | 결정 |
-|------|------|
-| 모델 | `claude-opus-4-7` (Opus 4.7) — 학습 단계라 품질 우선 |
-| SDK 패키지 | `anthropic==0.98.1` (async 클라이언트 사용 — handlers가 async라 자연스러움) |
-| 봇 정체성 | Generic AI 어시스턴트 (페르소나는 Stage 5에서 부여) |
-| 응답 언어 | 한국어 우선 + 사용자 언어 따라감 (시스템 프롬프트로 지시) |
-| 턴 구조 | 단일 턴 (멀티턴은 Stage 3) |
-| 파일명 | `src/services/agent.py` (Stage 4+ 도구·추천 확장 대비) |
-| `max_tokens` | 1024 |
-| Streaming | 비사용 |
-| 4096자 초과 처리 | 4000자에서 자르고 "..." 추가 (임시) |
-| 에러 메시지 | "죄송합니다. 잠시 후 다시 시도해주세요." 류 사용자 친화체 (트레이스백 노출 X) |
-| 타임아웃/재시도 | SDK default |
-| `/start` 안내 라벨 | `(Stage 2: Claude AI)` |
-
-### 3-4. Stage 2 작업 절차 (계획 → 승인 → 구현)
-1. **계획 단계**: 위 결정사항 기반으로 파일별 변경 계획 글로 설명
+### 3-3. Stage 3 작업 절차 (계획 → 승인 → 구현)
+1. **계획 단계**: Stage 3 구현 계획을 글로 먼저 설명
+   - 사용자별 대화 히스토리 보관 방식 (in-memory dict vs SQLite)
+   - Gemini SDK의 chat session API 활용 vs 직접 messages list 관리
+   - `/reset` 명령어로 컨텍스트 초기화
+   - `agent.ask()` 시그니처 변경 여부 (chat_id 추가? 또는 별도 함수?)
+   - 봇 재시작 시 컨텍스트 유지 vs 초기화 (Stage 3는 단순 in-memory 권장)
 2. **승인 단계**: 사용자 OK
 3. **구현 단계**: 승인된 계획대로 코드 작성
-4. **검증 단계**: 텔레그램에서 봇에게 질문 → Claude 답변 회신 확인 (DoD 6-2 항목)
+4. **검증 단계**: 텔레그램에서 멀티턴 대화 테스트 + `/reset` 동작
 
 > ⚠️ 1단계 건너뛰고 바로 코드 짜지 말 것. 이게 본 프로젝트의 작업 원칙(0번).
+
+### 3-4. Stage 2에서 끌고 온 후보 (Stage 3 또는 그 이후 검토)
+- **`finish_reason` 디버그 로깅 + 비정상 종료 사용자 알림**: Stage 2에서 한 번 응답이 짧게 끊긴 사례 발견 (재현 안 됨, 503 회복 직후 가능성). 다음 발생 시 진단 위해 추가 검토.
+- **자동 재시도 로직**: 503/429 같은 transient 에러에 대한 backoff retry. SDK default도 일부 재시도 하지만 명시적 처리 안 됨.
 
 ---
 
 ## 4. 미해결 이슈
 
-- Anthropic API 키 미발급 → Stage 2 시작 전 [console.anthropic.com](https://console.anthropic.com)에서 발급 필요
+- 없음 (Stage 3 작업 시작 가능 상태)
+- 향후: Anthropic 결제 가능해지면 `src/services/agent.py`만 교체해서 Claude로 전환
+- 후보 검토: `finish_reason` 처리, 자동 재시도 (3-4 참고)
 
 ---
 
@@ -98,8 +92,8 @@ code .env.example                       # ANTHROPIC_API_KEY= (값 없이) 추가
 - [x] **Stage A**: Claude Code 텔레그램 채널 연동 (개발자 ↔ Claude 통신용)
 - [x] **Stage 0**: 환경 셋업 — venv, 패키지, 폴더 구조, .env 검증
 - [x] **Stage 1**: Echo bot — 사용자 메시지를 그대로 되돌려주는 최소 봇 + `/start` 핸들러
-- [ ] **Stage 2**: Claude API 연동 ← **다음** — echo 대신 Claude가 답변
-- [ ] **Stage 3**: 대화 기억 — 멀티턴 컨텍스트 유지 (사용자별)
+- [x] **Stage 2**: LLM API 연동 — Gemini 2.5 Flash 답변 (Anthropic은 결제 가능해지면 전환)
+- [ ] **Stage 3**: 대화 기억 ← **다음** — 멀티턴 컨텍스트 유지 (사용자별)
 - [ ] **Stage 4**: 도구 추가 — Claude tool use로 외부 함수 호출 구조
 - [ ] **Stage 5**: 첫 도메인 기능 — 예: "오늘 서울 전시 추천해줘" 류 단순 추천
 - [ ] **Stage 6**: 캘린더 연동 — Google Calendar API로 빈 시간 분석
@@ -115,15 +109,15 @@ code .env.example                       # ANTHROPIC_API_KEY= (값 없이) 추가
 - [x] `Ctrl+C`로 정상 종료 (예외 트레이스백 없이)
 - [x] 봇 핸들러 코드는 `src/bot/`에, 환경 로딩은 `src/config.py`에 분리
 
-## 6-2. Stage 2 완료 기준 (DoD) — 확정
+## 6-2. Stage 2 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-06)
 
-- [ ] `python main.py`로 봇 프로세스 시작 (Stage 1 동작 유지)
-- [ ] 텔레그램에서 봇에 질문 전송 → `claude-opus-4-7` 호출 → 자연어 답변 회신
-- [ ] 한국어 질문엔 한국어, 영어 질문엔 영어로 답변
-- [ ] `/start` 안내 메시지 갱신 — `(Stage 2: Claude AI)` 라벨 포함
-- [ ] API 호출 실패(키 만료/네트워크/rate limit 등) 시 사용자에게 친절한 한 줄 메시지 회신, 봇 프로세스는 죽지 않음
-- [ ] Claude 호출 로직은 `src/services/agent.py`에 분리, `handlers.py`는 호출만
-- [ ] 응답이 4000자 초과 시 자르고 "..." 추가
+- [x] `python main.py`로 봇 프로세스 시작 (Stage 1 동작 유지)
+- [x] 텔레그램에서 봇에 질문 전송 → `gemini-2.5-flash` 호출 → 자연어 답변 회신
+- [x] 한국어 질문엔 한국어, 영어 질문엔 영어로 답변
+- [x] `/start` 안내 메시지 갱신 — `(Stage 2: Gemini AI)` 라벨 포함
+- [x] API 호출 실패(키 무효/네트워크/rate limit 등) 시 사용자에게 친절한 한 줄 메시지 회신, 봇 프로세스는 죽지 않음 — **503 + 429 두 케이스 자연 검증**
+- [x] LLM 호출 로직은 `src/services/agent.py`에 분리, `handlers.py`는 `agent.ask(...)` 호출만
+- [x] 응답이 4000자 초과 시 자르고 "..." 추가 (코드상 통과, 실제 trigger는 안 됨)
 
 ---
 
@@ -142,25 +136,34 @@ code .env.example                       # ANTHROPIC_API_KEY= (값 없이) 추가
 - **핸들러는 별도 모듈** — `src/bot/handlers.py`. Stage 2에서 `echo_message`만 Claude 호출로 교체하면 됨. main.py 무수정.
 - **`/start` 안내 메시지에 Stage 라벨** — "(Stage 1: echo bot)" 표기로 어떤 단계 봇인지 즉시 식별 가능. Stage 2부터는 라벨 갱신.
 
+### Stage 2
+- **LLM Provider: Google Gemini 채택 (Anthropic 결제 보류 우회)** — Anthropic API 결제가 즉시 불가하여 무료 티어인 Gemini 2.5 Flash로 진행. Anthropic 결제 가능해지면 `src/services/agent.py` 내부 + `.env` 변수만 교체.
+- **`agent.ask(user_message: str) -> str` provider-agnostic 시그니처** — 파일명도 `agent.py` (provider 명시 X). Provider 교체 시 `handlers.py` / `main.py` 무수정.
+- **google-genai SDK + async client (`client.aio`)** — 구 `google-generativeai`는 deprecated. 새 SDK는 `genai.Client(api_key=...).aio.models.generate_content(...)` 패턴.
+- **시스템 프롬프트 3줄**: ① generic AI 어시스턴트 ② 한국어 우선 + 사용자 언어 따라감 ③ 마크다운 사용 금지 (텔레그램 기본 메시지가 마크다운 자동 렌더링 X 때문)
+- **에러 처리: `errors.APIError` + 광범위 `Exception` 모두 캐치 → fallback 메시지 회신** — 봇이 절대 죽지 않도록. 503/429 자연 검증 통과.
+- **`max_output_tokens=1024` 학습용 default** — 비용 통제 + 짧은 응답 학습. Stage 5+ 항목별 메시지 분리에서 다시 다룸.
+- **`finish_reason` 미처리 (의도된 trade-off)** — Stage 2 단순화. 한 번 짧게 끊긴 응답 사례 발견했으나 일회성으로 판단. 재발 시 Stage 3+에서 보강.
+
 ---
 
 ## 8. 현재 코드 상태
 
 **채워진 파일:**
 - `main.py` — 봇 진입점 (Application 빌드 + 핸들러 등록 + `run_polling`)
-- `src/config.py` — `TELEGRAM_BOT_TOKEN` 로딩 + fail-fast 검증
-- `src/bot/handlers.py` — `start_command`, `echo_message` (Stage 2에서 `echo_message` 교체 예정)
-- `requirements.txt`, `.gitignore`, `.env`, `.env.example`
-- `README.md` — 프로젝트 개요 + Setup 명령어 + Requirements
+- `src/config.py` — `TELEGRAM_BOT_TOKEN` + `GEMINI_API_KEY` 로딩 + fail-fast 검증
+- `src/bot/handlers.py` — `start_command`, `ai_message` (agent.ask 호출만)
+- `src/services/agent.py` — Gemini 2.5 Flash 호출 래퍼. provider-agnostic `ask(user_message) -> str`
+- `requirements.txt` (python-telegram-bot, python-dotenv, google-genai), `.gitignore`, `.env`, `.env.example`
+- `README.md` — 프로젝트 개요 + UX 의도 + Setup 명령어 + Requirements
 
 **의도적으로 빈 stub:**
-- `src/__init__.py` — 패키지 마커
-- `src/bot/__init__.py` — 패키지 마커 (re-export 필요해지면 그때)
-- `src/services/__init__.py` — Stage 2에서 Claude 호출 래퍼 추가 예정
+- `src/__init__.py`, `src/bot/__init__.py`, `src/services/__init__.py` — 패키지 마커
 
 **시크릿 파일 위치** (값은 절대 여기 적지 않음):
 - 봇 토큰: `.env`의 `TELEGRAM_BOT_TOKEN`
-- (Stage 2 추가 예정) Anthropic API 키: `.env`의 `ANTHROPIC_API_KEY`
+- Gemini API 키: `.env`의 `GEMINI_API_KEY`
+- (향후 Anthropic 전환 시) `.env`의 `ANTHROPIC_API_KEY`
 
 ---
 
@@ -171,8 +174,12 @@ code .env.example                       # ANTHROPIC_API_KEY= (값 없이) 추가
 | `Activate.ps1 ... 실행할 수 없습니다` | PowerShell 실행 정책 | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
 | `ModuleNotFoundError: telegram` | venv 미활성화 (시스템 Python으로 실행됨) | `.\venv\Scripts\Activate.ps1` 후 재실행 |
 | 한글/이모지 출력 깨짐 (`UnicodeEncodeError: cp949`) | Windows 콘솔 기본 인코딩 | 진입점 `.py` 상단에 `sys.stdout.reconfigure(encoding="utf-8")` |
+| `python -c "..."` 인라인 실행 시 한글 출력 깨짐 | 인라인은 `.py`의 reconfigure 안 거침 | `$env:PYTHONIOENCODING='utf-8'; python -c "..."` 환경변수로 강제 |
 | `.env`의 한글 주석 깨짐 | 메모장 ANSI 저장 | VS Code 등 UTF-8 에디터로 재저장 |
 | 봇이 응답 안 함 | 토큰 오타 / 봇 미실행 | `python main.py`로 토큰 길이 확인, 프로세스 살아있는지 확인 |
+| Gemini 503 UNAVAILABLE | Gemini 서버 일시 과부하 | 우리 코드는 친화 메시지 회신 + 봇 생존. 수십 초~수 분 후 재시도 |
+| Gemini 429 RESOURCE_EXHAUSTED | 무료 티어 quota (RPM/RPD) 초과 | retryDelay 따라 대기. 일일 한도면 다음날 / 다른 모델 / 카드 등록으로 한도 상향 |
+| 봇 답변이 비정상으로 짧게 끊김 | `finish_reason` 비정상 종료 가능성 (SAFETY/RECITATION 등) — Stage 2엔 미진단 | 재발 시 `agent.py`에 `response.candidates[0].finish_reason` 로깅 추가 (Stage 3+ 후보) |
 
 ---
 

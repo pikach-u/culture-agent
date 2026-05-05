@@ -1,19 +1,86 @@
-# 가상환경
-venv/
-.venv/
-
-# 환경변수 (시크릿)
+# ============================================
+# 시크릿 (절대 커밋 금지)
+# ============================================
+# 환경변수 — TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY 등 보관
 .env
+.env.local
+.env.*.local
 
-# Python 캐시
+# 외부 서비스 OAuth/API 자격증명 (Stage 6 Google Calendar 등에서 받게 됨)
+credentials.json
+token.json
+client_secret*.json
+service-account*.json
+
+# 일반 키 파일
+*.pem
+*.key
+secrets/
+
+# ============================================
+# Python
+# ============================================
+# 인터프리터 캐시
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# IDE
+# 가상환경
+venv/
+.venv/
+env/
+
+# 패키징/빌드 산출물
+*.egg-info/
+*.egg
+dist/
+build/
+
+# 테스트/타입체커/린터 캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ============================================
+# 로컬 데이터 (Stage 3+ 대화 기억 / 사용자 데이터)
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+data/
+local/
+
+# ============================================
+# 로그 / 임시 / 백업
+# ============================================
+*.log
+logs/
+*.tmp
+*.bak
+*~
+
+# ============================================
+# IDE / 에디터
+# ============================================
 .vscode/
 .idea/
+*.swp
+*.swo
 
+# Claude Code 로컬 전용 설정 (개인 권한·env 등)
+.claude/settings.local.json
+
+# ============================================
 # OS
+# ============================================
 .DS_Store
 Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
