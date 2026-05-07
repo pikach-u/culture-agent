@@ -29,61 +29,82 @@
 
 ## 1. 현재 위치
 
-- **Stage 2 ✅ 완료 → Stage 3 진입 직전**
+- **Stage 4 ✅ 완료 → Stage 5 진입 직전**
 
 ---
 
-## 2. 마지막 작업 (2026-05-06)
+## 2. 마지막 작업 (2026-05-07)
 
-- Stage 2 Gemini API 연동 구현 및 검증 완료
-- 검증된 항목 (DoD 전부 통과):
-  - `python main.py`로 봇 시작
-  - `/start` → "(Stage 2: Gemini AI)" 라벨 안내
-  - 한국어 질문 → 자연스러운 한국어 답변
-  - 영어 질문 → 영어 답변
-  - 마크다운 미사용 (시스템 프롬프트로 강제됨)
-  - **API 실패 케이스 자연 검증 (503 UNAVAILABLE + 429 RESOURCE_EXHAUSTED)**: 친화 메시지 회신 + 봇 프로세스 생존
-  - `Ctrl+C` → 트레이스백 없이 정상 종료
-  - 코드 분리: `src/services/agent.py` (LLM 호출), `src/bot/handlers.py` (호출만)
+### Stage 2 LLM 교체: Gemini → 로컬 Ollama (Gemma 4 E2B)
+- Anthropic 결제 우회로 도입했던 Gemini를 로컬 추론(학습 환경)으로 교체
+- ollama 공식 Python SDK 0.6.2 + Ollama 데몬 0.23.1 + `gemma4:e2b` 모델
+- 모듈 레벨 `AsyncClient` 싱글톤, `num_ctx=8192`, `num_predict=1024`, `think=False`
+- 에러 분기: 빌트인 `ConnectionError` (SDK가 `httpx.ConnectError`를 래핑) / `httpx.TimeoutException` / `ollama.ResponseError` + 광범위 `Exception`
+- 시스템 프롬프트 3줄 그대로 보존
+- 검증 통과: 한/영 응답, 마크다운 미사용, 데몬 오프 시 친화 메시지, Ctrl+C 정상 종료
+
+### Stage 3 대화 기억 구현
+- 사용자별 in-memory `dict[chat_id, list[dict]]`로 직전 10턴(=메시지 20개) 슬라이딩 윈도우 보관
+- 시그니처 변경: `agent.ask(chat_id, user_message)` / `agent.reset(chat_id)` 추가
+- `/reset` 명령어 추가, `/start` 라벨 `(Stage 3: 대화 기억)` 갱신 + `/reset` 안내 한 줄
+- 에러 발생 턴 / 빈 응답은 히스토리에 저장 안 함 (깨끗한 재시도)
+- 시스템 프롬프트는 매 호출마다 messages 맨 앞에 새로 주입 (히스토리엔 저장 X)
+- 저장은 4000자 컷 *전* 원본 (모델이 자기가 한 말을 정확히 알도록)
+- 검증 통과: 멀티턴 이름 기억, `/reset` 초기화, 사용자별 분리, 에러 시 깔끔 복구
+
+### Stage 4 외부 정보 활용 (시간 인지) — function calling 시도 후 context injection으로 피벗
+- **의도**: agent가 현재 시간을 알고 답변에 자연스럽게 반영. 장기 비전(시간 키워드 없는 추천 요청에도 시간대 자동 반영)의 토대.
+- **시도 1: gemma4:e2b + function calling**: `get_current_time(timezone)` 함수 + `TOOLS_SCHEMA` (ollama `tools=[...]`) + 최대 3턴 turn loop 구현. 모델이 호출은 시도했으나 ollama 측 Gemma 4 chat template에 tool_call 추출 로직 미완성 → 출력이 `content`에 raw 텍스트(`get_current_time{timezone:<|"|>Asia/Seoul<|"|>}`)로 누출. ollama 라이브러리 페이지에서 Gemma 4의 "Tools" 태그 부재가 일치 신호.
+- **시도 2: qwen3.5:4b (Tools 태그 모델로 교체)**: 첫 호출은 동작했으나 GitHub Issue #14745 ("qwen3.5 sometimes prints out tool call instead of executing it") 그대로 재현 — stochastic하게 emit/skip. 한국어 품질도 gemma4:e2b 대비 한 단계 하락. 종합 미달.
+- **결정: gemma4:e2b 유지 + 컨텍스트 주입으로 피벗**:
+  - `_build_system_prompt()`이 매 호출마다 시스템 프롬프트에 KST 현재 시간을 동적 삽입 (`현재 시간 (KST): 2026년 05월 07일 HH시 MM분 (요일)`)
+  - 모델은 도구 판단 없이 *항상* 시간을 알고 자연스럽게 답변 → "주말 뭐 할까?" 같은 시간 키워드 없는 질문에도 시간 인식 가능
+  - tools 관련 코드 전부 제거 (`TOOLS_SCHEMA`, `_TOOL_REGISTRY`, `_execute_tool`, `get_current_time`, turn loop, `MAX_TOOL_TURNS`)
+  - `tzdata` 의존성 제거 — KST 고정이라 `timezone(timedelta(hours=9))` 만으로 충분
+  - `/start` 라벨 `(Stage 4: 시간 인지)`
+- **트레이드오프**: LA/도쿄 등 다른 시간대 미지원 (한국 기준만). 필요 시 Stage 5+에서 (a) 시차 표 주입 또는 (b) 큰 모델로 tool 재시도. 학습 가치는 오히려 더 큼 — 두 패턴(tool / context injection) trade-off 직접 체감.
+
+### Stage 3 알려진 한계 (Stage 5+에서 검토, Stage 4 진행 중에도 변동 없음)
+- **동일 chat_id 동시 메시지 race condition**: `_history`는 일반 dict이고 `ask()`는 async. `asyncio.Lock` per chat_id 5줄 추가로 해결 가능. 단일 사용자 학습 환경에선 재현 어려워 후순위.
+- **사진/스티커 등 비텍스트 메시지**: `filters.TEXT & ~filters.COMMAND` 필터가 막아줘서 `update.message.text`는 항상 채워져 있음. 캡션 달린 사진도 현재는 무시됨. 멀티모달 / 캡션 처리 정책은 Stage 5+에서 결정.
 
 ---
 
-## 3. 다음 세션 첫 작업 (Stage 3: 대화 기억)
+## 3. 다음 세션 첫 작업 (Stage 5: 첫 도메인 기능)
 
 ### 3-1. 사전 준비
-- 추가 키 발급/결제 없음 (Stage 2 환경 그대로 사용)
+- 추가 키 발급 없음 (현 환경 그대로)
+- 의의: 일반 챗봇 → *문화생활 추천 봇* 으로의 첫 도메인 진입. 장기 사용자 프로파일(취향 영구 저장) 도입 시점도 함께 검토.
 
 ### 3-2. 환경 셋팅 (PowerShell에서)
 ```powershell
 cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
-.\venv\Scripts\Activate.ps1            # 새 터미널마다 필요 — 프롬프트에 (venv) 확인
-python main.py                          # Stage 2 봇 그대로 동작 확인
+.\venv\Scripts\Activate.ps1
+python main.py
 ```
 
-### 3-3. Stage 3 작업 절차 (계획 → 승인 → 구현)
-1. **계획 단계**: Stage 3 구현 계획을 글로 먼저 설명
-   - 사용자별 대화 히스토리 보관 방식 (in-memory dict vs SQLite)
-   - Gemini SDK의 chat session API 활용 vs 직접 messages list 관리
-   - `/reset` 명령어로 컨텍스트 초기화
-   - `agent.ask()` 시그니처 변경 여부 (chat_id 추가? 또는 별도 함수?)
-   - 봇 재시작 시 컨텍스트 유지 vs 초기화 (Stage 3는 단순 in-memory 권장)
-2. **승인 단계**: 사용자 OK
-3. **구현 단계**: 승인된 계획대로 코드 작성
-4. **검증 단계**: 텔레그램에서 멀티턴 대화 테스트 + `/reset` 동작
+### 3-3. Stage 5 결정 필요 항목 (계획 → 승인 → 구현)
+1. **첫 추천 도메인 범위**: 영화 / 전시 / 공연 / 책 / 모두? 학습용으로 한 카테고리부터 시작 권장.
+2. **추천 데이터 소스**: (a) 모델 학습 데이터에 의존 — 시의성 없음 + 환각 위험 (b) 외부 API / RSS / 스크래핑 — 실제 현재 상영/전시 (c) 하드코딩 데모 데이터 — 학습용 빠른 검증.
+3. **장기 사용자 프로파일 도입 여부**: Stage 3 단기 기억과 별개. 도입 시 SQLite 추가 + 정보 추출 로직 + 시스템 프롬프트 주입.
+4. **응답 형식**: UX 비전(0번) — 추천 결과 *항목별 메시지 분리* 시작. Stage 2의 4000자 자르기 로직과의 관계 정리.
+5. **모델 적합성 재검토**: gemma4:e2b의 한국어가 추천문 작성에 충분한지. 부족하면 `gemma4:e4b` 등 큰 변종 검토.
 
-> ⚠️ 1단계 건너뛰고 바로 코드 짜지 말 것. 이게 본 프로젝트의 작업 원칙(0번).
+> ⚠️ 1단계 (계획) 건너뛰고 바로 코드 짜지 말 것. 본 프로젝트의 작업 원칙(0번).
 
-### 3-4. Stage 2에서 끌고 온 후보 (Stage 3 또는 그 이후 검토)
-- **`finish_reason` 디버그 로깅 + 비정상 종료 사용자 알림**: Stage 2에서 한 번 응답이 짧게 끊긴 사례 발견 (재현 안 됨, 503 회복 직후 가능성). 다음 발생 시 진단 위해 추가 검토.
-- **자동 재시도 로직**: 503/429 같은 transient 에러에 대한 backoff retry. SDK default도 일부 재시도 하지만 명시적 처리 안 됨.
+### 3-4. 후속 검토 후보 (Stage 5 또는 그 이후)
+- **다른 시간대 (LA/도쿄 등) 지원**: 시차 표 시스템 프롬프트 주입 또는 큰 모델로 tool 재시도
+- **chat_id별 `asyncio.Lock`**: race condition 해결
+- **자동 재시도 (transient 에러)**: backoff retry
+- **멀티모달**: 캡션 달린 사진 처리 (Stage 4에서 미정인 채 남음)
+- **`finish_reason` 디버그 로깅** (Stage 2 시절 후보, Ollama 전환 후 미발생)
 
 ---
 
 ## 4. 미해결 이슈
 
-- 없음 (Stage 3 작업 시작 가능 상태)
-- 향후: Anthropic 결제 가능해지면 `src/services/agent.py`만 교체해서 Claude로 전환
-- 후보 검토: `finish_reason` 처리, 자동 재시도 (3-4 참고)
+- 없음 (Stage 4 작업 시작 가능)
+- Stage 3 알려진 한계 2건은 위 2번 섹션 참조 — 의도적으로 후순위 처리
 
 ---
 
@@ -92,10 +113,10 @@ python main.py                          # Stage 2 봇 그대로 동작 확인
 - [x] **Stage A**: Claude Code 텔레그램 채널 연동 (개발자 ↔ Claude 통신용)
 - [x] **Stage 0**: 환경 셋업 — venv, 패키지, 폴더 구조, .env 검증
 - [x] **Stage 1**: Echo bot — 사용자 메시지를 그대로 되돌려주는 최소 봇 + `/start` 핸들러
-- [x] **Stage 2**: LLM API 연동 — Gemini 2.5 Flash 답변 (Anthropic은 결제 가능해지면 전환)
-- [ ] **Stage 3**: 대화 기억 ← **다음** — 멀티턴 컨텍스트 유지 (사용자별)
-- [ ] **Stage 4**: 도구 추가 — Claude tool use로 외부 함수 호출 구조
-- [ ] **Stage 5**: 첫 도메인 기능 — 예: "오늘 서울 전시 추천해줘" 류 단순 추천
+- [x] **Stage 2**: LLM API 연동 — Gemini 2.5 Flash → 로컬 Ollama Gemma 4 E2B 마이그레이션 완료
+- [x] **Stage 3**: 대화 기억 — 멀티턴 컨텍스트 유지 (사용자별 in-memory)
+- [x] **Stage 4**: 외부 정보 활용 (시간 인지) — function calling 시도 후 모델 한계 확인 → context injection 패턴으로 피벗 (KST 시간 시스템 프롬프트 주입)
+- [ ] **Stage 5**: 첫 도메인 기능 ← **다음** — 예: "오늘 서울 전시 추천해줘" 류 단순 추천 + 장기 취향 프로파일 도입
 - [ ] **Stage 6**: 캘린더 연동 — Google Calendar API로 빈 시간 분석
 - [ ] **Stage 7**: 추천 로직 — 취향·시간·위치 통합 추천 + 음식점/예매 링크
 
@@ -109,15 +130,34 @@ python main.py                          # Stage 2 봇 그대로 동작 확인
 - [x] `Ctrl+C`로 정상 종료 (예외 트레이스백 없이)
 - [x] 봇 핸들러 코드는 `src/bot/`에, 환경 로딩은 `src/config.py`에 분리
 
-## 6-2. Stage 2 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-06)
+## 6-2. Stage 2 완료 기준 (DoD) — ✅ 전부 통과
 
-- [x] `python main.py`로 봇 프로세스 시작 (Stage 1 동작 유지)
-- [x] 텔레그램에서 봇에 질문 전송 → `gemini-2.5-flash` 호출 → 자연어 답변 회신
-- [x] 한국어 질문엔 한국어, 영어 질문엔 영어로 답변
-- [x] `/start` 안내 메시지 갱신 — `(Stage 2: Gemini AI)` 라벨 포함
-- [x] API 호출 실패(키 무효/네트워크/rate limit 등) 시 사용자에게 친절한 한 줄 메시지 회신, 봇 프로세스는 죽지 않음 — **503 + 429 두 케이스 자연 검증**
-- [x] LLM 호출 로직은 `src/services/agent.py`에 분리, `handlers.py`는 `agent.ask(...)` 호출만
-- [x] 응답이 4000자 초과 시 자르고 "..." 추가 (코드상 통과, 실제 trigger는 안 됨)
+- 초기 (Gemini, 2026-05-06): 한/영 응답, 마크다운 미사용, API 503/429 친화 회신, Ctrl+C 정상 종료, 코드 분리
+- 마이그레이션 (Ollama, 2026-05-07): `/start` 라벨 `(Stage 2: Gemma 4 E2B local)`, 데몬 오프 연결 에러 친화 메시지, 시스템 프롬프트 3줄 보존
+
+## 6-3. Stage 3 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-07)
+
+- [x] `python main.py`로 봇 시작 (Stage 2 동작 유지)
+- [x] `/start` 안내 갱신 — `(Stage 3: 대화 기억)` 라벨 + `/reset` 안내 포함
+- [x] 같은 chat_id에서 멀티턴 컨텍스트 유지 ("내 이름은 X" → "이름 뭐였지?" → 정답)
+- [x] `/reset` 명령어 → 안내 회신 + 해당 chat_id의 history만 초기화
+- [x] `/reset` 직후 동일 질문 → 모름 (초기화 동작)
+- [x] 사용자 A/B 동시 사용 시 기억 분리
+- [x] 11턴 이상 길게 대화 후 가장 오래된 턴은 잊음 (슬라이딩 윈도우 동작)
+- [x] Ollama 에러 발생 턴은 history에 저장 안 됨 (깨끗한 재시도)
+- [x] 봇 재시작 시 history 초기화 (의도된 in-memory 동작)
+
+## 6-4. Stage 4 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-07)
+
+- [x] `python main.py`로 봇 시작 (Stage 3 동작 유지)
+- [x] `/start` 라벨 `(Stage 4: 시간 인지)`
+- [x] "지금 몇 시야?" → 정확한 KST 시간 응답 (도구 호출 없이 시스템 프롬프트로)
+- [x] "오늘 무슨 요일이야?" → 정확한 요일
+- [x] 시간 키워드 *없는* 질문에도 답변에 시간 인식 자연스럽게 반영 (장기 비전 정렬 확인)
+- [x] 멀티턴 기억 (Stage 3 회귀 통과)
+- [x] `/reset` 동작 (Stage 3 회귀 통과)
+- [x] Ollama 데몬 끄기 → 친화 메시지 (Stage 2~3 회귀 통과)
+- [x] gemma4:e2b 한국어 품질 유지 (qwen3.5:4b 시도 → 한국어 하락 확인 후 복귀)
 
 ---
 
@@ -127,43 +167,83 @@ python main.py                          # Stage 2 봇 그대로 동작 확인
 - **Python 3.12.3 채택** — 최신 안정 라인. 3.13도 후보였으나 일부 패키지 휠 호환성 리스크 회피.
 - **패키지 매니저: pip + venv** — poetry/uv는 MVP 단계에 오버킬. 표준 도구로 시작.
 - **폴더 구조: `src/` 분리 패턴** — 외부 통신(`bot/`)과 내부 로직(`services/`) 구분. 추후 Discord/웹 등 다른 채널로 확장 시 `services/` 재사용.
-- **환경 검증 스크립트로서의 `main.py`** — 단순 `print` 대신 실제 `import` + `.env` 로딩까지 검증. Stage 1에서 echo bot 진입점으로 갈아엎을 예정.
+- **환경 검증 스크립트로서의 `main.py`** — 단순 `print` 대신 실제 `import` + `.env` 로딩까지 검증. Stage 1에서 echo bot 진입점으로 갈아엎음.
 
 ### Stage 1
 - **python-telegram-bot 22.x async 패턴** — `Application.builder()` + `CommandHandler` + `MessageHandler` + `run_polling()`. `run_polling`이 SIGINT/SIGTERM 자동 처리해서 별도 try/except 불필요.
-- **`main.py`는 "조립" 역할만** — config 로드 + 핸들러 등록 + 폴링 시작. 비즈니스 로직 0줄. Stage 2에서 핸들러 내용물만 바꾸면 main.py는 그대로.
+- **`main.py`는 "조립" 역할만** — config 로드 + 핸들러 등록 + 폴링 시작. 비즈니스 로직 0줄.
 - **`src/config.py`에서 fail-fast** — `TELEGRAM_BOT_TOKEN`이 비어있으면 import 시점에 즉시 `RuntimeError`. 봇 시작했다가 첫 메시지에서 망가지는 것보다 조기 발견이 낫다.
-- **핸들러는 별도 모듈** — `src/bot/handlers.py`. Stage 2에서 `echo_message`만 Claude 호출로 교체하면 됨. main.py 무수정.
-- **`/start` 안내 메시지에 Stage 라벨** — "(Stage 1: echo bot)" 표기로 어떤 단계 봇인지 즉시 식별 가능. Stage 2부터는 라벨 갱신.
+- **핸들러는 별도 모듈** — `src/bot/handlers.py`. Stage 2에서 `echo_message`만 LLM 호출로 교체.
+- **`/start` 안내 메시지에 Stage 라벨** — `(Stage N: ...)` 표기로 어떤 단계 봇인지 즉시 식별.
 
-### Stage 2
-- **LLM Provider: Google Gemini 채택 (Anthropic 결제 보류 우회)** — Anthropic API 결제가 즉시 불가하여 무료 티어인 Gemini 2.5 Flash로 진행. Anthropic 결제 가능해지면 `src/services/agent.py` 내부 + `.env` 변수만 교체.
-- **`agent.ask(user_message: str) -> str` provider-agnostic 시그니처** — 파일명도 `agent.py` (provider 명시 X). Provider 교체 시 `handlers.py` / `main.py` 무수정.
-- **google-genai SDK + async client (`client.aio`)** — 구 `google-generativeai`는 deprecated. 새 SDK는 `genai.Client(api_key=...).aio.models.generate_content(...)` 패턴.
-- **시스템 프롬프트 3줄**: ① generic AI 어시스턴트 ② 한국어 우선 + 사용자 언어 따라감 ③ 마크다운 사용 금지 (텔레그램 기본 메시지가 마크다운 자동 렌더링 X 때문)
-- **에러 처리: `errors.APIError` + 광범위 `Exception` 모두 캐치 → fallback 메시지 회신** — 봇이 절대 죽지 않도록. 503/429 자연 검증 통과.
-- **`max_output_tokens=1024` 학습용 default** — 비용 통제 + 짧은 응답 학습. Stage 5+ 항목별 메시지 분리에서 다시 다룸.
-- **`finish_reason` 미처리 (의도된 trade-off)** — Stage 2 단순화. 한 번 짧게 끊긴 응답 사례 발견했으나 일회성으로 판단. 재발 시 Stage 3+에서 보강.
+### Stage 2 (초기, Gemini)
+- **LLM Provider: Google Gemini 채택 (Anthropic 결제 보류 우회)** — Anthropic API 결제가 즉시 불가하여 무료 티어 Gemini 2.5 Flash로 진행.
+- **`agent.ask(user_message: str) -> str` provider-agnostic 시그니처** — 파일명도 `agent.py`. Provider 교체 시 handler/main.py 무수정.
+- **google-genai SDK + async client (`client.aio`)** — 구 `google-generativeai`는 deprecated.
+- **시스템 프롬프트 3줄**: ① generic AI 어시스턴트 ② 한국어 우선 + 사용자 언어 따라감 ③ 마크다운 사용 금지 (텔레그램 기본 메시지 마크다운 자동 렌더링 X)
+- **에러 처리: `errors.APIError` + 광범위 `Exception` 캐치 → fallback 회신** — 봇 절대 죽지 않음. 503/429 자연 검증 통과.
+- **`max_output_tokens=1024` 학습용 default** — 비용 통제 + 짧은 응답 학습.
+- **`finish_reason` 미처리 (의도된 trade-off)** — Stage 2 단순화. 한 번 짧게 끊긴 사례 발견했으나 일회성 판단. 재발 시 보강.
+
+### Stage 2-bis (Ollama 마이그레이션, 2026-05-07)
+- **Provider 전환: Gemini → 로컬 Ollama Gemma 4 E2B** — 학습 환경 강화 + 외부 의존(quota/네트워크) 제거. Anthropic 결제 가능해지면 다시 Claude로 갈 수 있음 (`agent.py` 내부만 교체).
+- **클라이언트: ollama 공식 Python SDK 0.6.2** — httpx 직접 호출/OpenAI 호환 엔드포인트는 학습 차원에서 배제. 공식 SDK 끝까지 사용.
+- **`AsyncClient` 모듈 레벨 싱글톤** — 함수 호출마다 클라이언트 생성 X.
+- **호출 옵션**: `num_ctx=8192` (Stage 3 멀티턴 대비), `num_predict=1024` (Stage 2 max_output_tokens 유지), `think=False` (E2B 권장 + Stage 2 단순화 유지)
+- **메시지 구성**: `messages=[{system}, {user}]` — Gemma 4는 system role 네이티브 지원. 시스템 프롬프트 3줄 그대로 보존.
+- **에러 분기 (SDK 동작 확인 후 적용)**:
+  - 빌트인 `ConnectionError` — SDK가 `httpx.ConnectError`를 잡아 `raise ConnectionError("Failed to connect to Ollama...")`로 래핑하므로 빌트인을 잡아야 함
+  - `httpx.TimeoutException` — SDK 미래핑, 직접 import해서 잡음 (httpx는 ollama의 transitive dep)
+  - `ollama.ResponseError` — 데몬이 에러 status 반환 시 (모델 없음/로드 실패 포함)
+  - `Exception` — 마지막 안전망
+- **Config fail-fast 정책**: `TELEGRAM_BOT_TOKEN`만 fail-fast 유지. `OLLAMA_HOST`/`OLLAMA_MODEL`은 비면 기본값(`http://localhost:11434`, `gemma4:e2b`) fallback.
+- **에러 메시지 톤**: 시스템 프롬프트와 fallback이 존댓말이라 신규 에러 메시지(연결/모델/타임아웃)도 존댓말로 통일.
+
+### Stage 3
+- **대화 기억은 단기(메시지 컨텍스트)와 장기(사용자 프로파일)가 별개** — Stage 3은 단기만. 장기 취향 프로파일은 Stage 5쯤 SQLite + 추출 로직과 함께 도입 (추천 기능이 나오면서 자연스럽게).
+- **저장 방식: in-memory `dict[int, list[dict]]`** — 봇 재시작 시 초기화. 학습 단계엔 충분. SQLite는 Stage 5+.
+- **기억 길이: 최근 10턴 (= 메시지 20개) 슬라이딩 윈도우** — 8K 컨텍스트 한도 + 학습용 안전선.
+- **시그니처 변경: `ask(chat_id: int, user_message: str) -> str`** — Stage 2까진 chat_id 없이 단일 턴이었지만 Stage 3 진입했으니 변경 OK. 별도 함수(`ask_with_memory`)로 안 나눔.
+- **`/reset` 명령어 추가** — 사용자가 직접 컨텍스트 초기화. 안내 메시지: "대화 기록을 초기화했습니다."
+- **시스템 프롬프트는 히스토리에 저장 안 함** — 매 호출마다 messages 맨 앞에 새로 주입. 프롬프트 변경 시 다음 호출부터 즉시 반영.
+- **에러/빈 응답 턴은 히스토리에 저장 안 함** — 사용자가 같은 메시지로 재시도 시 "user: foo" + "assistant: 죄송합니다" 패턴이 모델 컨텍스트에 끼지 않음.
+- **저장은 4000자 컷팅 전 원본** — 모델이 자기가 한 말을 정확히 알도록. 사용자가 본 것과 모델이 기억하는 것이 다를 수 있는 4000자 초과 케이스는 작은 모델이라 거의 안 발생.
+- **알려진 한계 의도적 후순위 처리**: race condition (asyncio.Lock 미도입), 캡션 사진 처리 (Stage 5+ 멀티모달과 함께)
+
+### Stage 4 (시간 인지, 2026-05-07)
+- **목표 재정의**: 원래 PROGRESS는 "function calling으로 외부 함수 호출 구조"였음. 실제 결과는 **"외부 정보를 LLM에 주입하는 패턴 학습"** 으로 일반화됨 — function calling은 한 가지 구현, context injection은 다른 한 가지. 케이스에 따라 선택.
+- **function calling 시도 → 작은 모델 + ollama 통합 한계 확인**:
+  - gemma4:e2b: 모델이 호출 시도는 했으나 ollama 측 Gemma 4 chat template에 tool_call 추출 로직 미완성 → 출력이 `content`로 raw 텍스트 누출 (`get_current_time{timezone:<|"|>...<|"|>}`). ollama 라이브러리에 Gemma 4 "Tools" 태그 부재가 신호였음.
+  - qwen3.5:4b ("Tools" 태그 있음): GitHub Issue #14745 그대로 재현 — stochastic emit. 한국어 품질도 gemma4 대비 하락.
+  - 결론: 작은 모델 + ollama tool integration은 2026-05 시점 *불안정*. 학습 흐름이 자꾸 끊기는 비용 > 학습 가치.
+- **컨텍스트 주입 채택**:
+  - `_build_system_prompt()`이 매 호출마다 KST 현재 시간을 시스템 프롬프트에 동적 삽입.
+  - 모델 판단 불필요 → stochasticity 없음. 모든 모델에서 동작.
+  - 시간 키워드 없는 질문("주말 뭐 할까?")에도 자연스러운 시간 인식 가능 → 장기 비전(추천 봇)과 자연스럽게 일치.
+- **모델: gemma4:e2b 복귀** — 한국어 자연스러움 우선. tools 통합 못 쓰는 약점은 컨텍스트 주입으로 우회.
+- **시간대: KST 고정** — `timezone(timedelta(hours=9))`. 한국 DST 없으니 IANA 불필요. `tzdata` 제거 (사용자가 명시적으로 의존성 최소화 선호).
+- **`agent.ask()` 시그니처: `(chat_id, user_message)` 그대로 유지** — Stage 3과 동일.
+- **`get_current_time` 함수도 제거** — 시간 주입은 `_build_system_prompt()`에 직접 구현. tool 다시 도입 시 함수 부활 또는 새 도구로 가능.
+- **알려진 한계 (Stage 5+에서 검토)**: 다른 시간대 미지원, race condition (Stage 3 한계 그대로), 멀티모달.
 
 ---
 
 ## 8. 현재 코드 상태
 
 **채워진 파일:**
-- `main.py` — 봇 진입점 (Application 빌드 + 핸들러 등록 + `run_polling`)
-- `src/config.py` — `TELEGRAM_BOT_TOKEN` + `GEMINI_API_KEY` 로딩 + fail-fast 검증
-- `src/bot/handlers.py` — `start_command`, `ai_message` (agent.ask 호출만)
-- `src/services/agent.py` — Gemini 2.5 Flash 호출 래퍼. provider-agnostic `ask(user_message) -> str`
-- `requirements.txt` (python-telegram-bot, python-dotenv, google-genai), `.gitignore`, `.env`, `.env.example`
-- `README.md` — 프로젝트 개요 + UX 의도 + Setup 명령어 + Requirements
+- `main.py` — 봇 진입점 (`Application` 빌드 + `/start`, `/reset`, 텍스트 핸들러 등록 + `run_polling`)
+- `src/config.py` — `TELEGRAM_BOT_TOKEN` fail-fast + `OLLAMA_HOST`/`OLLAMA_MODEL` fallback 로딩
+- `src/bot/handlers.py` — `start_command`, `reset_command`, `ai_message` (모두 `agent.*` 호출만)
+- `src/services/agent.py` — Ollama AsyncClient 래퍼. `ask(chat_id, user_message)` + `reset(chat_id)`. 사용자별 history dict + 턴 기반 슬라이딩 윈도우. `_build_system_prompt()`이 매 호출마다 KST 현재 시간을 시스템 프롬프트에 동적 삽입.
+- `requirements.txt` (python-telegram-bot, python-dotenv, ollama — `tzdata`는 Stage 4에서 제거), `.gitignore`, `.env`, `.env.example`
+- `README.md` — 프로젝트 개요 + UX 의도 (Setup 섹션의 Anthropic 언급은 Stage 4 진입 전후 정리 후보)
 
 **의도적으로 빈 stub:**
 - `src/__init__.py`, `src/bot/__init__.py`, `src/services/__init__.py` — 패키지 마커
 
 **시크릿 파일 위치** (값은 절대 여기 적지 않음):
 - 봇 토큰: `.env`의 `TELEGRAM_BOT_TOKEN`
-- Gemini API 키: `.env`의 `GEMINI_API_KEY`
-- (향후 Anthropic 전환 시) `.env`의 `ANTHROPIC_API_KEY`
+- (Ollama는 키 없음 — 로컬 데몬)
 
 ---
 
@@ -174,19 +254,24 @@ python main.py                          # Stage 2 봇 그대로 동작 확인
 | `Activate.ps1 ... 실행할 수 없습니다` | PowerShell 실행 정책 | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
 | `ModuleNotFoundError: telegram` | venv 미활성화 (시스템 Python으로 실행됨) | `.\venv\Scripts\Activate.ps1` 후 재실행 |
 | 한글/이모지 출력 깨짐 (`UnicodeEncodeError: cp949`) | Windows 콘솔 기본 인코딩 | 진입점 `.py` 상단에 `sys.stdout.reconfigure(encoding="utf-8")` |
-| `python -c "..."` 인라인 실행 시 한글 출력 깨짐 | 인라인은 `.py`의 reconfigure 안 거침 | `$env:PYTHONIOENCODING='utf-8'; python -c "..."` 환경변수로 강제 |
+| `python -c "..."` 인라인 한글 깨짐 | 인라인은 `.py`의 reconfigure 안 거침 | `$env:PYTHONIOENCODING='utf-8'; python -c "..."` |
 | `.env`의 한글 주석 깨짐 | 메모장 ANSI 저장 | VS Code 등 UTF-8 에디터로 재저장 |
-| 봇이 응답 안 함 | 토큰 오타 / 봇 미실행 | `python main.py`로 토큰 길이 확인, 프로세스 살아있는지 확인 |
-| Gemini 503 UNAVAILABLE | Gemini 서버 일시 과부하 | 우리 코드는 친화 메시지 회신 + 봇 생존. 수십 초~수 분 후 재시도 |
-| Gemini 429 RESOURCE_EXHAUSTED | 무료 티어 quota (RPM/RPD) 초과 | retryDelay 따라 대기. 일일 한도면 다음날 / 다른 모델 / 카드 등록으로 한도 상향 |
-| 봇 답변이 비정상으로 짧게 끊김 | `finish_reason` 비정상 종료 가능성 (SAFETY/RECITATION 등) — Stage 2엔 미진단 | 재발 시 `agent.py`에 `response.candidates[0].finish_reason` 로깅 추가 (Stage 3+ 후보) |
+| 봇이 응답 안 함 | 토큰 오타 / 봇 미실행 | 토큰 확인, `Get-Process python`으로 봇 살아있는지 확인 |
+| `Conflict: terminated by other getUpdates request` | 같은 봇 토큰으로 인스턴스 2개 동시 실행 | 새로 띄우기 전 기존 프로세스 종료 |
+| 봇이 "AI 서비스에 연결할 수 없습니다" 회신 | Ollama 데몬 미실행 | 시작 메뉴에서 Ollama 실행 또는 `ollama serve`. 트레이 아이콘 확인 |
+| 봇이 "AI 모델 로드에 실패했습니다" 회신 | `OLLAMA_MODEL` 모델 없음 / 로드 실패 | `ollama list`로 설치된 모델 확인, `ollama pull gemma4:e2b` 재실행 |
+| (Stage 2 Gemini 시절) `503 UNAVAILABLE` / `429 RESOURCE_EXHAUSTED` | Stage 2-bis Ollama 전환 후 미발생 | 참고 보존 |
 
 ---
 
 ## 10. 발견한 함정 (나중에 CLAUDE.md로 옮길 후보)
 
 - 모든 진입점 `.py`에 `sys.stdout.reconfigure(encoding="utf-8")` 필요 (Windows)
-- venv 활성화는 새 터미널마다 필요 — **프롬프트 앞에 `(venv)` 붙는지 매번 확인 습관화**. `ModuleNotFoundError: telegram` 류 에러 나면 venv 미활성화 의심 1순위 (Stage 1 검증 중 실제로 발생)
+- venv 활성화는 새 터미널마다 필요 — **프롬프트 앞에 `(venv)` 붙는지 매번 확인 습관화**. `ModuleNotFoundError: telegram` 류 에러 나면 venv 미활성화 의심 1순위.
 - `.env` 편집은 UTF-8 에디터 사용 (VS Code 권장)
-- python-dotenv는 `KEY = "value"` 형태(공백 + 큰따옴표)도 자동으로 파싱 — 토큰 길이만 검증하면 됨
-- 같은 봇 토큰으로 인스턴스 2개 동시 실행 시 `Conflict: terminated by other getUpdates request` 에러. 새로 띄우기 전에 기존 프로세스 종료 확인 (`Get-Process python`)
+- python-dotenv는 `KEY = "value"` (공백+큰따옴표) 형태도 자동 파싱.
+- 같은 봇 토큰으로 인스턴스 2개 동시 실행 시 `Conflict` — 기존 프로세스 종료 후 띄우기.
+- **Ollama 데몬과 Python SDK는 별개 버전** — 데몬은 `0.23.x` 라인, `pip install ollama`는 `0.6.x` 라인. 둘 다 활성 상태여야 동작.
+- **Ollama 데몬은 두 프로세스로 돔** — `ollama app.exe` (트레이 UI) + `ollama.exe` (서버). 끄려면 둘 다 종료. PowerShell: `Stop-Process -Name "ollama","ollama app" -Force`.
+- **python-telegram-bot의 `filters.TEXT`** — `message.text`가 truthy일 때만 매치. 캡션 달린 사진은 `message.caption`이라 통과 못 함 (의도적 동작). 멀티모달 도입 시 정책 재검토.
+- **async + 모듈 레벨 가변 dict는 race 가능** — 학습 단계 트레이드오프. chat_id별 `asyncio.Lock`으로 5줄에 해결 가능 (Stage 4+ 후보).

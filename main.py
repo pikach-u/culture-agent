@@ -7,13 +7,14 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from src.bot.handlers import ai_message, start_command
+from src.bot.handlers import ai_message, reset_command, start_command
 from src.config import TELEGRAM_BOT_TOKEN
 
 
 def main() -> None:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_message))
 
     print("Bot 시작 - Ctrl+C로 종료")
