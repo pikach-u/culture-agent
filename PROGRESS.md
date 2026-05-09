@@ -329,7 +329,8 @@ python main.py
 ### Stage 7 (캘린더 일정 추가, 2026-05-09, Stage 6과 통합 진행)
 
 - **사용자 결정 — 옵션 B 채택**: 원래 권장은 옵션 A(읽기로 마무리, 쓰기는 후속). 사용자가 "일정이 실제로 추가됐으면 좋겠어"라며 6+7 통합 선택. 디버깅 영역 넓어지는 trade-off 인지하고 진행.
-- **SCOPES: `calendar.events`** — `calendar.readonly`에서 확장. 본인 캘린더 이벤트 read+write. 전체 `calendar` scope 안 씀(캘린더 자체 생성 권한 불필요). `events` scope만 list에 들어감(`readonly`는 `events`에 포함되므로 별도 명시 불필요).
+- **SCOPES: `calendar.events` + `calendar.readonly` 둘 다 명시** — 본인 캘린더 이벤트 read+write + freebusy 조회. 전체 `calendar` scope 안 씀(캘린더 자체 생성 권한 불필요).
+  - **함정 (실측 후 정정)**: `calendar.events`는 events.list/insert만 커버. `freebusy.query`는 `calendar.readonly` (또는 신규 `calendar.events.freebusy`) 권한이 별도 필요. 첫 시도에서 events만 명시 → freebusy 호출 시 `403 insufficientPermissions` 발생 → 두 scope 동시 명시로 해결.
 - **`/add` 명시 명령어 채택** (자연어 파싱 안 함):
   - Stage 4에서 작은 모델 + tool 통합 한계 직접 체감. 자연어 → 일정 파라미터 추출은 같은 함정.
   - 명시 형식 `/add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM`이 안정성 압도적.

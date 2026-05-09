@@ -15,7 +15,10 @@ from googleapiclient.discovery import build
 
 from src.config import CLIENT_SECRET_PATH, TOKEN_PATH
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
 KST = timezone(timedelta(hours=9))
 WEEKDAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
