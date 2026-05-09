@@ -29,11 +29,11 @@
 
 ## 1. 현재 위치
 
-- **Stage 5 ✅ 완료 → Stage 6 진입 직전**
+- **Stage 6 + Stage 7 ✅ 완료 → Stage 8 진입 직전**
 
 ---
 
-## 2. 마지막 작업 (2026-05-07)
+## 2. 마지막 작업 (2026-05-09)
 
 ### Stage 2 LLM 교체: Gemini → 로컬 Ollama (Gemma 4 E2B)
 - Anthropic 결제 우회로 도입했던 Gemini를 로컬 추론(학습 환경)으로 교체
@@ -72,49 +72,77 @@
 - **검증 통과**: 분리 전송 정상, 추천 후 후속 질문(멀티턴+추천 컨텍스트) 정상, 데몬 오프 회복, `/reset` 동작.
 - **의도된 한계**: 모델 학습 데이터 컷오프 → 최신작 모름 + 디테일 환각 가능. 추천 설명도 모델 자율로 짧음. Stage 6/7에서 외부 데이터 통합으로 해결 예정.
 
+### Stage 6 캘린더 연동 (읽기) — 2026-05-09
+- **의도**: 사용자 캘린더 빈 시간을 추천 응답에 자연스럽게 반영. 장기 비전(시간·공간 맥락 추천)의 토대.
+- **구현**:
+  - `src/services/calendar.py` 신규 — `run_oauth_flow()`, `get_free_slots_text()`, `_load_credentials()`, `_format_free_slots()`, `_subtract_busy()`
+  - `src/config.py`에 `CLIENT_SECRET_PATH`, `TOKEN_PATH` 경로 상수 추가 (`PROJECT_ROOT / credentials/`)
+  - OAuth: `InstalledAppFlow.run_local_server(port=0)` — 동기 + 블로킹. `connect_command`에서 `asyncio.to_thread`로 감싸 봇 폴링 안 막음.
+  - 자동 토큰 refresh: `creds.expired and creds.refresh_token` 분기.
+  - freebusy: `service.freebusy().query()`로 향후 7일 busy 슬롯 → working hours 09-23 안에서 inverse → "5/9(토): 19:30-23:00" 형태 텍스트.
+  - 시스템 프롬프트 주입: `agent._build_system_prompt()`을 async로 변경 + `await asyncio.to_thread(calendar_service.get_free_slots_text)`. 토큰 없으면 None → 섹션 그냥 빠지고 일반 추천 동작.
+- **검증 통과**: `/connect` → 브라우저 OAuth → `token.json` 저장 → 시간 키워드 질문에 빈 시간 자연 반영.
+
+### Stage 7 캘린더 일정 추가 (쓰기) — 2026-05-09 (Stage 6과 통합 진행)
+- **의도**: 봇이 "일정 추가했어요" 응답하지만 실제 캘린더엔 안 만들어지는 환각 문제 직접 해결. 사용자 결정: "옵션 A(읽기 마무리)" 대신 "옵션 B(6+7 통합)" — "일정이 실제로 추가됐으면 좋겠어".
+- **SCOPES 확장**: `calendar.readonly` → `calendar.events`. 본인 캘린더 이벤트 read+write. 전체 `calendar` scope는 안 씀(캘린더 자체 생성 권한 불필요).
+- **`add_event(summary, start_dt, end_dt) -> str`**: `service.events().insert(calendarId="primary", body={...})` → `htmlLink` 반환. `timeZone="Asia/Seoul"` 명시.
+- **명령어**: `/add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM`. 자연어 파싱은 작은 모델 한계(Stage 4 경험)로 명시 명령으로 우회. 파이프 구분 + "종료 ≤ 시작" 검증.
+- **시스템 프롬프트 환각 방지 가드레일**: "캘린더 일정 추가/수정은 직접 할 수 없습니다. 사용자가 요청하면 '/add ...' 형식으로 안내만 하세요. 절대 '일정을 추가했어요' 같은 거짓 응답을 하지 마세요." 추가.
+- **OAuth 재동의 필요**: SCOPES 변경 → 기존 `token.json` 무효 → 삭제 후 `/connect` 재실행 (사용자 안내 포함).
+- **검증 통과**: `/add` 정상 추가 + Google Calendar 웹/앱에서 일정 보임. 자연어 "내일 영화 일정 추가" 요청 시 봇이 거짓 응답 대신 `/add` 사용법 안내 (환각 방지 동작).
+- **의도된 한계**: 단일 사용자(`token.json` 1개)라 멀티 사용자 시 캘린더 데이터 누출 위험 → Stage 9+에서 chat_id별 토큰 분리 검토.
+
+### Stage 6/7 진행 중 환경 이슈
+- **Ollama OOM**: gemma4:e2b 로드 시 "model requires more system memory (5.4 GiB) than is available (5.2 GiB)". 다른 프로그램 일부 종료로 0.2 GiB 확보하면 해결. 영구 발생 시 `NUM_CTX 8192 → 4096` 검토 (KV 캐시 절반).
+
 ### Stage 3 알려진 한계 (Stage 6+에서 검토, Stage 4~5 진행 중에도 변동 없음)
 - **동일 chat_id 동시 메시지 race condition**: `_history`는 일반 dict이고 `ask()`는 async. `asyncio.Lock` per chat_id 5줄 추가로 해결 가능. 단일 사용자 학습 환경에선 재현 어려워 후순위.
 - **사진/스티커 등 비텍스트 메시지**: `filters.TEXT & ~filters.COMMAND` 필터가 막아줘서 `update.message.text`는 항상 채워져 있음. 캡션 달린 사진도 현재는 무시됨. 멀티모달 / 캡션 처리 정책은 Stage 6+에서 결정.
 
 ---
 
-## 3. 다음 세션 첫 작업 (Stage 6: 캘린더 연동)
+## 3. 다음 세션 첫 작업 (Stage 8: 외부 영화 데이터)
 
 ### 3-1. 사전 준비
-- **Google Cloud 프로젝트 + Calendar API 활성화 + OAuth 클라이언트 자격증명** 발급 필요 (Stage 6 시작 전 사용자 작업)
-- 의의: 봇이 사용자 일정을 *읽어* "비어있는 시간"을 분석 → 추천을 시간 맥락에 맞춤 (예: "토요일 14~18시 비어있으니 그 시간에 볼 영화 추천")
+- **KOFIC API 키 발급** (영화진흥위원회 OpenAPI) — 박스오피스/현재 상영작 list. 회원가입 후 무료 발급.
+- **TMDB API 키 발급** — 영화 메타데이터(줄거리/포스터/평점). themoviedb.org 회원가입 후 무료 발급.
+- 의의: 영화 추천이 모델 학습 지식만으로는 컷오프 이후 작품 모름 + 디테일 환각 가능. 외부 데이터로 "현재 상영작 + 신뢰 가능한 메타데이터"를 추천 응답 시점에 주입.
 
-### 3-2. 환경 셋팅 (PowerShell에서)
+### 3-2. 환경 셋팅 (변동 없음)
 ```powershell
 cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
 .\venv\Scripts\Activate.ps1
 python main.py
 ```
 
-### 3-3. Stage 6 결정 필요 항목 (계획 → 승인 → 구현)
-1. **API 접근 방식**: OAuth (사용자 본인 캘린더 연동) — 학습용 정석. 서비스 계정은 개인 캘린더 접근 못 해서 부적합.
-2. **연동 트리거 / OAuth 플로우**: `/connect` 명령어 → 브라우저 OAuth → 콜백으로 토큰 저장. HTTP 콜백 서버 필요 vs 디바이스 코드 플로우 (코드 입력 방식, 콜백 서버 불필요).
-3. **토큰 저장**: 단일 사용자면 `.env` 또는 평문 파일로 충분. 멀티 사용자 대응이면 SQLite 도입 (Stage 5에서 미뤘던 그것).
-4. **데이터 활용 형식**: 캘린더 이벤트를 (a) 시스템 프롬프트에 주입 ("이번 주 빈 시간: 토 14-18시, 일 10-13시") vs (b) tool로 제공 — Stage 4 경험상 작은 모델에 tool 무리니까 (a) 주입 권장.
-5. **권한 범위**: read-only로 시작. write는 추천 일정을 캘린더에 *저장* 기능 도입 시 (Stage 7 영역).
-6. **조회 범위**: 향후 7일 / 14일? 너무 길면 컨텍스트 부담. 7일이 학습용 적정.
+### 3-3. Stage 8 결정 필요 항목 (계획 → 승인 → 구현)
+1. **데이터 소스 결합 방식**: KOFIC(상영작 list) + TMDB(메타) 결합 vs TMDB만 사용. KOFIC + TMDB가 한국 시점 정확.
+2. **호출 시점**: 매 메시지마다 vs 추천 키워드 감지 시만. 후자가 효율 (대부분 메시지는 추천 아님).
+3. **추천 키워드 감지**: 모델한테 분기 시키기 vs 정규식/키워드 매칭. Stage 4 경험상 작은 모델 신뢰 어려움 → 정규식 권장.
+4. **캐싱 전략**: 박스오피스는 일 1회 갱신 → 메모리 dict + TTL 24h. TMDB 메타는 영화 ID별 캐시.
+5. **데이터 활용 형식**: 시스템 프롬프트 주입(현재 상영작 list 형태) vs tool 호출. Stage 4 경험상 주입 권장.
+6. **API 키 저장**: `.env`의 `KOFIC_API_KEY`, `TMDB_API_KEY`. 영화 추천 시에만 필요하므로 fail-fast 안 함 (없으면 모델 지식만으로 fallback).
 
 > ⚠️ 1단계 (계획) 건너뛰고 바로 코드 짜지 말 것. 본 프로젝트의 작업 원칙(0번).
 
-### 3-4. 후속 검토 후보 (Stage 6 또는 그 이후)
-- **장기 사용자 프로파일 (취향 영구 저장)**: Stage 5에서 미뤘음. SQLite 도입과 묶음 — Stage 6 토큰 저장에서 SQLite 도입 시 같이 진행 가능.
-- **외부 영화 데이터 (현재 상영작)**: TMDB API 또는 KOFIC API 연동. Stage 7 영역.
-- **다른 시간대 지원**: 시차 표 주입 또는 tool 재시도.
+### 3-4. 후속 검토 후보 (Stage 8 또는 그 이후)
+- **장기 사용자 프로파일 (취향 영구 저장)**: SQLite 도입과 묶음. Stage 9 즈음.
+- **chat_id별 토큰 분리**: 멀티 사용자 캘린더 데이터 누출 방지 (Stage 7 의도된 한계 해결).
+- **크롤링 (전시/공연/뮤지컬)**: API로 부족한 도메인. 인터파크/예스24/미술관 공식 사이트. Stage 10.
 - **chat_id별 `asyncio.Lock`**: race condition 해결.
 - **자동 재시도 (transient 에러)**: backoff retry.
 - **멀티모달**: 캡션 달린 사진 처리.
+- **다른 시간대 지원**: KST 외 시간대.
+- **Ollama OOM 영구 대응**: NUM_CTX 8192 → 4096 검토.
+- **빈 시간 텍스트 캐싱**: 매 메시지마다 freebusy API 호출은 부담. TTL 1~5분 메모리 캐시.
 
 ---
 
 ## 4. 미해결 이슈
 
-- 없음 (Stage 4 작업 시작 가능)
-- Stage 3 알려진 한계 2건은 위 2번 섹션 참조 — 의도적으로 후순위 처리
+- 없음 (Stage 8 작업 시작 가능)
+- Stage 3 알려진 한계 2건 + Stage 7 멀티 사용자 토큰 누출 가능성은 위 2번 섹션 참조 — 의도적으로 후순위 처리
 
 ---
 
@@ -127,8 +155,12 @@ python main.py
 - [x] **Stage 3**: 대화 기억 — 멀티턴 컨텍스트 유지 (사용자별 in-memory)
 - [x] **Stage 4**: 외부 정보 활용 (시간 인지) — function calling 시도 후 모델 한계 확인 → context injection 패턴으로 피벗 (KST 시간 시스템 프롬프트 주입)
 - [x] **Stage 5**: 첫 도메인 기능 (영화 추천) — 시스템 프롬프트로 도메인/형식 지시 + handlers.py 응답 분리 전송. 외부 데이터/장기 프로파일은 Stage 6+로 미룸
-- [ ] **Stage 6**: 캘린더 연동 ← **다음** — Google Calendar API로 빈 시간 분석
-- [ ] **Stage 7**: 추천 로직 — 취향·시간·위치 통합 추천 + 음식점/예매 링크
+- [x] **Stage 6**: 캘린더 연동 (읽기) — Google Calendar API freebusy로 빈 시간 분석 + 시스템 프롬프트 주입. OAuth `/connect`로 토큰 관리.
+- [x] **Stage 7**: 캘린더 일정 추가 (쓰기) — Stage 6과 통합 진행. SCOPES 확장(`calendar.events`) + `/add 제목 | 시작 | 종료` 명령어. 시스템 프롬프트 환각 방지 가드레일.
+- [ ] **Stage 8**: 외부 영화 데이터 ← **다음** — KOFIC(현재 상영작) + TMDB(메타데이터) 결합. 추천 환각 해결.
+- [ ] **Stage 9**: 추천 로직 통합 — 취향·시간·위치 통합 + 음식점/예매 링크
+- [ ] **Stage 10**: 크롤링 — 영화 외 도메인(전시/공연/뮤지컬) 외부 데이터 (인터파크/예스24/미술관 등 여러 사이트)
+- [ ] **Stage 11**: 신규 이벤트 자동 알림 — 백그라운드 job + 푸시
 
 ---
 
@@ -179,6 +211,27 @@ python main.py
 - [x] Ollama 데몬 끄기 → 친화 메시지 (Stage 2~3 회귀)
 - [x] 시간 인지 + 추천 결합 ("오늘 저녁 영화") — 시간 키워드 자연스러운 반영 관찰됨
 - [x] 시스템 프롬프트 미세조정으로 도메인 외 일반 대화 verbosity 회복
+
+## 6-6. Stage 6 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-09)
+
+- [x] `python main.py`로 봇 시작 (Stage 5 동작 유지)
+- [x] `/start` 라벨 `(Stage 6+7: 캘린더 연동 + 일정 추가)`
+- [x] `/connect` → 브라우저 OAuth → "캘린더 연동 완료!" 회신 + `credentials/token.json` 생성
+- [x] 캘린더에 일정 추가 후 "내일 저녁 영화 추천" → 응답이 그 시간 피해서 추천
+- [x] `token.json` 없는 상태에서 일반 추천 정상 동작 (빈 시간 섹션 그냥 빠짐)
+- [x] OAuth 동의 화면에서 "확인되지 않은 앱" 경고 → "고급" 클릭 후 통과 가능
+- [x] Stage 5 회귀 통과 (영화 추천 분리 전송, `/reset`, Ollama 데몬 끄기 친화 메시지)
+
+## 6-7. Stage 7 완료 기준 (DoD) — ✅ 전부 통과 (2026-05-09)
+
+- [x] SCOPES 변경 후 `token.json` 삭제 → `/connect` 재실행 → 새 권한 동의 화면에 "이벤트 만들기/수정" 권한 표시
+- [x] `/add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM` → 봇이 "일정 추가 완료: 제목\n[link]" 회신
+- [x] Google Calendar 웹/앱에서 추가된 일정 확인 가능
+- [x] 잘못된 형식(파이프 빠짐, 날짜 형식 틀림) → 사용법 안내 회신
+- [x] 종료 ≤ 시작 → "종료 시간은 시작 시간보다 뒤여야 합니다" 회신
+- [x] 자연어 "내일 영화 일정 추가해줘" → 봇이 거짓 응답 대신 `/add` 사용법 안내 (환각 방지)
+- [x] `/connect` 안 한 상태에서 `/add` → "캘린더 연동이 필요합니다" 회신
+- [x] Stage 6 회귀 통과 (빈 시간 반영 추천)
 
 ---
 
@@ -261,16 +314,45 @@ python main.py
   - 2차 (적용): 페르소나 다시 넓힘 ("도움이 되는 ... 영화 추천에 특히 강합니다") + 추천 지침 헤더에 스코프 명시("추천 요청일 때만 적용") + "한두 줄" 제거 + "평범한" → "자연스러운"
   - **학습 포인트로 기록**: 시스템 프롬프트 작성 시 "어휘 선택 + 스코프 명시"가 작은 모델에서 결정적.
 
+### Stage 6 (캘린더 연동, 2026-05-09)
+
+- **권장값 결정 모두 그대로 진행**: API=OAuth, OAuth 플로우=`InstalledAppFlow.run_local_server` (데스크톱 앱 + 자동 콜백), 토큰=평문 `credentials/token.json`, 데이터 활용=시스템 프롬프트 주입, 권한=`calendar.readonly`(Stage 7에서 확장), 조회 범위=7일.
+- **데스크톱 앱 OAuth 클라이언트 타입 채택** — 웹 애플리케이션 vs 데스크톱 중 데스크톱이 redirect URI 자동 처리. 학습 단순.
+- **OAuth는 동기 + 블로킹 → `asyncio.to_thread`로 감싸기** — 봇 폴링 멈춤 방지. python-telegram-bot async 흐름과 google-auth-oauthlib 동기 함수 결합 패턴.
+- **`freebusy.query()` 사용** — busy 슬롯만 받아서 inverse(=working hours - busy)로 free 슬롯 계산. `events.list`보다 깔끔.
+- **Working hours 09:00-23:00 KST 고정** — 사용자 설정 가능하게 안 함(학습 default). 1시간 미만 슬롯은 필터링.
+- **시스템 프롬프트 주입 방식**: 시간(Stage 4) + 빈 시간(Stage 6)을 한 시스템 프롬프트에 합쳐 매 호출마다 동적 생성. 캐싱 안 함(매번 freebusy API 호출). 학습용 단순. 캐싱은 후속 검토 후보.
+- **`get_free_slots_text()` 반환 None vs 빈 문자열**: token 없으면 None → 섹션 자체 생략. 빈 시간 0개여도 "- 빈 시간 없음" 한 줄은 있어서 이때만 섹션 포함.
+- **`_load_credentials()`에서 자동 refresh + 저장**: expired + refresh_token 있으면 refresh + token.json 덮어쓰기. 사용자 재인증 불필요.
+- **`agent._build_system_prompt()` async화**: freebusy 호출이 sync + 네트워크 I/O. `asyncio.to_thread`로 감싸 봇 폴링 안 막음. 호출 체인 ask → \_build\_system\_prompt 모두 async.
+
+### Stage 7 (캘린더 일정 추가, 2026-05-09, Stage 6과 통합 진행)
+
+- **사용자 결정 — 옵션 B 채택**: 원래 권장은 옵션 A(읽기로 마무리, 쓰기는 후속). 사용자가 "일정이 실제로 추가됐으면 좋겠어"라며 6+7 통합 선택. 디버깅 영역 넓어지는 trade-off 인지하고 진행.
+- **SCOPES: `calendar.events`** — `calendar.readonly`에서 확장. 본인 캘린더 이벤트 read+write. 전체 `calendar` scope 안 씀(캘린더 자체 생성 권한 불필요). `events` scope만 list에 들어감(`readonly`는 `events`에 포함되므로 별도 명시 불필요).
+- **`/add` 명시 명령어 채택** (자연어 파싱 안 함):
+  - Stage 4에서 작은 모델 + tool 통합 한계 직접 체감. 자연어 → 일정 파라미터 추출은 같은 함정.
+  - 명시 형식 `/add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM`이 안정성 압도적.
+  - 사용자가 자연어로 시도하면 봇이 거짓 응답하는 환각 risk → 시스템 프롬프트 가드레일로 차단.
+- **시스템 프롬프트 환각 방지 가드레일**: "캘린더 일정 추가/수정은 직접 할 수 없습니다... 절대 '일정을 추가했어요' 같은 거짓 응답을 하지 마세요." 추가. 작은 모델은 instruction을 영역별로 잘 분리 못 한다는 Stage 5 학습 포인트 기반 — 명시적 negative instruction으로 환각 차단.
+- **`add_event` 시그니처: `(summary, start_dt, end_dt) -> str`**: htmlLink 반환. 향후 description, location 추가 시 시그니처 확장 OK.
+- **`timeZone="Asia/Seoul"` 명시**: ISO 형식에 offset 들어가지만 `timeZone` 필드도 같이 줘서 Google API가 일관되게 해석.
+- **종료 ≤ 시작 검증** — 기본 robustness. Google API가 거절하기 전에 짧은 메시지로 사용자 안내.
+- **OAuth 재동의 필수**: SCOPES 변경 시 기존 token.json 무효. 사용자 안내 시 `Remove-Item credentials\token.json` + `/connect` 재실행 명시.
+- **단일 사용자 가정 유지**: token.json 1개 → 멀티 사용자 시 다른 사람이 봇과 대화하면 본인 캘린더 데이터/추가 권한 누출 가능. Stage 9+에서 chat_id별 분리 검토.
+
 ---
 
 ## 8. 현재 코드 상태
 
 **채워진 파일:**
-- `main.py` — 봇 진입점 (`Application` 빌드 + `/start`, `/reset`, 텍스트 핸들러 등록 + `run_polling`)
-- `src/config.py` — `TELEGRAM_BOT_TOKEN` fail-fast + `OLLAMA_HOST`/`OLLAMA_MODEL` fallback 로딩
-- `src/bot/handlers.py` — `start_command`, `reset_command`, `ai_message`. Stage 5에서 `ai_message`에 `[N]` 패턴 정규식 분리 로직 추가 (2개 이상 감지 시 항목별로 별도 `reply_text` 호출)
-- `src/services/agent.py` — Ollama AsyncClient 래퍼. `ask(chat_id, user_message)` + `reset(chat_id)`. 사용자별 history dict + 턴 기반 슬라이딩 윈도우. `_build_system_prompt()`이 매 호출마다 KST 현재 시간을 시스템 프롬프트에 동적 삽입.
-- `requirements.txt` (python-telegram-bot, python-dotenv, ollama — `tzdata`는 Stage 4에서 제거), `.gitignore`, `.env`, `.env.example`
+- `main.py` — 봇 진입점 (`Application` 빌드 + `/start`, `/reset`, `/connect`, `/add`, 텍스트 핸들러 등록 + `run_polling`)
+- `src/config.py` — `TELEGRAM_BOT_TOKEN` fail-fast + `OLLAMA_HOST`/`OLLAMA_MODEL` fallback + Stage 6에서 `CLIENT_SECRET_PATH`/`TOKEN_PATH` 경로 상수 추가
+- `src/bot/handlers.py` — `start_command`, `reset_command`, `connect_command`, `add_command`, `ai_message`. Stage 5에서 `[N]` 패턴 분리, Stage 6에서 `/connect` (asyncio.to_thread로 OAuth 감쌈), Stage 7에서 `/add` (파이프 구분 파싱 + add_event 호출).
+- `src/services/agent.py` — Ollama AsyncClient 래퍼. `ask(chat_id, user_message)` + `reset(chat_id)`. 사용자별 history dict + 턴 슬라이딩 윈도우. `_build_system_prompt()`이 매 호출마다 KST 현재 시간 + (캘린더 연동 시) 빈 시간을 시스템 프롬프트에 동적 삽입. Stage 7에서 환각 방지 가드레일 추가. async 호출 체인.
+- `src/services/calendar.py` (Stage 6+7 신규) — Google Calendar OAuth + freebusy + add_event. `run_oauth_flow()`, `get_free_slots_text()`, `add_event()` 공개. `_load_credentials()` 자동 refresh.
+- `requirements.txt` (python-telegram-bot, python-dotenv, ollama, google-api-python-client, google-auth-oauthlib — `tzdata`는 Stage 4에서 제거)
+- `.gitignore` (Stage 6에서 `credentials/` 폴더 추가), `.env`, `.env.example`
 - `README.md` — 프로젝트 개요 + UX 의도 (Setup 섹션의 Anthropic 언급은 Stage 4 진입 전후 정리 후보)
 
 **의도적으로 빈 stub:**
@@ -279,6 +361,8 @@ python main.py
 **시크릿 파일 위치** (값은 절대 여기 적지 않음):
 - 봇 토큰: `.env`의 `TELEGRAM_BOT_TOKEN`
 - (Ollama는 키 없음 — 로컬 데몬)
+- Google OAuth 클라이언트: `credentials/client_secret.json` (gitignored)
+- Google OAuth 토큰: `credentials/token.json` (gitignored, `/connect` 시 자동 생성)
 
 ---
 
@@ -295,6 +379,10 @@ python main.py
 | `Conflict: terminated by other getUpdates request` | 같은 봇 토큰으로 인스턴스 2개 동시 실행 | 새로 띄우기 전 기존 프로세스 종료 |
 | 봇이 "AI 서비스에 연결할 수 없습니다" 회신 | Ollama 데몬 미실행 | 시작 메뉴에서 Ollama 실행 또는 `ollama serve`. 트레이 아이콘 확인 |
 | 봇이 "AI 모델 로드에 실패했습니다" 회신 | `OLLAMA_MODEL` 모델 없음 / 로드 실패 | `ollama list`로 설치된 모델 확인, `ollama pull gemma4:e2b` 재실행 |
+| Ollama "model requires more system memory (X) than is available (Y)" | OS RAM 부족 | 다른 프로그램 일부 종료 (보통 Chrome 탭/Discord 등으로 0.2~1 GiB 확보), Ollama 재시작, 또는 `NUM_CTX 8192 → 4096` (KV 캐시 절반) |
+| `/connect` 시 "확인되지 않은 앱" 경고 | OAuth 동의 화면 미검증 (테스트 모드) | "고급" → "안전하지 않은 페이지로 이동" 클릭. 테스트 사용자에 본인 Gmail 등록되어 있어야 함 |
+| `/add` 시 `403 insufficientPermissions` | SCOPES 변경 후 기존 token.json 재사용 중 | `Remove-Item credentials\token.json` 후 `/connect` 재실행 (재동의) |
+| `/connect` 시 브라우저 안 열림 / 콜백 멈춤 | 방화벽 차단 또는 기본 브라우저 미지정 | Windows 방화벽 알림 허용, 기본 브라우저 설정 확인 |
 | (Stage 2 Gemini 시절) `503 UNAVAILABLE` / `429 RESOURCE_EXHAUSTED` | Stage 2-bis Ollama 전환 후 미발생 | 참고 보존 |
 
 ---

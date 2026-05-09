@@ -7,6 +7,7 @@
 .env.*.local
 
 # 외부 서비스 OAuth/API 자격증명 (Stage 6 Google Calendar 등에서 받게 됨)
+credentials/
 credentials.json
 token.json
 client_secret*.json

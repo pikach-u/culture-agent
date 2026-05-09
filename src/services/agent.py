@@ -8,12 +8,14 @@ Provider-agnostic 시그니처. 향후 다른 백엔드로 전환 시 이 파일
 현재 backend: 로컬 Ollama (gemma4:e2b).
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
 import ollama
 
 from src.config import OLLAMA_HOST, OLLAMA_MODEL
+from src.services import calendar as calendar_service
 
 NUM_CTX = 8192
 NUM_PREDICT = 1024
@@ -28,6 +30,10 @@ SYSTEM_INSTRUCTION = (
     "당신은 도움이 되는 한국어 AI 어시스턴트입니다. 영화 추천에 특히 강합니다.\n"
     "기본적으로 한국어로 답변하되, 사용자가 다른 언어로 질문하면 그 언어로 답변하세요.\n"
     "마크다운 문법(**굵게**, ## 제목, - 목록 등)을 사용하지 말고 일반 텍스트로만 답변하세요.\n"
+    "\n"
+    "캘린더 안내:\n"
+    "- 캘린더 일정 추가/수정은 직접 할 수 없습니다. 사용자가 요청하면 '/add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM' 형식으로 안내만 하세요.\n"
+    "- 절대 '일정을 추가했어요' 같은 거짓 응답을 하지 마세요.\n"
     "\n"
     "영화 추천 지침 (추천 요청일 때만 적용):\n"
     "- 사용자가 영화 추천을 요청하거나 '볼만한 영화' 같은 추천성 질문을 하면 2~4편을 아래 형식으로 답하세요. "
@@ -57,18 +63,31 @@ def reset(chat_id: int) -> None:
     _history.pop(chat_id, None)
 
 
-def _build_system_prompt() -> str:
+async def _build_system_prompt() -> str:
     now = datetime.now(KST)
     weekday = WEEKDAYS_KO[now.weekday()]
     time_str = now.strftime("%Y년 %m월 %d일 %H시 %M분")
-    return f"{SYSTEM_INSTRUCTION}\n현재 시간 (KST): {time_str} ({weekday}요일)"
+
+    parts = [
+        SYSTEM_INSTRUCTION,
+        f"현재 시간 (KST): {time_str} ({weekday}요일)",
+    ]
+
+    free_slots = await asyncio.to_thread(calendar_service.get_free_slots_text)
+    if free_slots:
+        parts.append(free_slots)
+        parts.append(
+            "추천 시 위 빈 시간대를 고려해 자연스럽게 반영하세요. (예: 토요일 저녁 비어있음 → 그 시간에 볼 영화 추천)"
+        )
+
+    return "\n".join(parts)
 
 
 async def ask(chat_id: int, user_message: str) -> str:
     history = _history.get(chat_id, [])
     user_dict = {"role": "user", "content": user_message}
     messages: list[dict] = [
-        {"role": "system", "content": _build_system_prompt()},
+        {"role": "system", "content": await _build_system_prompt()},
         *history,
         user_dict,
     ]
