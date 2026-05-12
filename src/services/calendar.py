@@ -6,7 +6,7 @@
 - add_event(summary, start_dt, end_dt) -> str: primary 캘린더에 이벤트 생성. htmlLink 반환.
 """
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -14,13 +14,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 from src.config import CLIENT_SECRET_PATH, TOKEN_PATH
+from src.timeutil import KST, WEEKDAYS_KO
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.readonly",
 ]
-KST = timezone(timedelta(hours=9))
-WEEKDAYS_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
 DAYS_AHEAD = 7
 WORK_START_HOUR = 9

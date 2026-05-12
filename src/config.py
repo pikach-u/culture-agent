@@ -10,6 +10,8 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "").strip() or "http://localhost:11434"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip() or "gemma4:e2b"
+KOFIC_API_KEY = os.getenv("KOFIC_API_KEY", "").strip()
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CREDENTIALS_DIR = PROJECT_ROOT / "credentials"
