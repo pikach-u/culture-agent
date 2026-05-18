@@ -4,3 +4,4 @@ ollama==0.6.2
 google-api-python-client==2.151.0
 google-auth-oauthlib==1.2.1
 requests==2.32.3
+beautifulsoup4==4.14.3

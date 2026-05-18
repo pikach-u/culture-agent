@@ -12,6 +12,7 @@ from src.bot.handlers import (
     ai_message,
     connect_command,
     reset_command,
+    setlocation_command,
     start_command,
 )
 from src.config import TELEGRAM_BOT_TOKEN
@@ -23,6 +24,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("connect", connect_command))
     app.add_handler(CommandHandler("add", add_command))
+    app.add_handler(CommandHandler("setlocation", setlocation_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_message))
 
     print("Bot 시작 - Ctrl+C로 종료")

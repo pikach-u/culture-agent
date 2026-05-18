@@ -30,6 +30,7 @@ KOFIC_TIMEOUT = 10  # KOFIC가 가끔 느림 — 5초는 빈번히 ReadTimeout (
 TMDB_TIMEOUT = 5
 CACHE_TTL = timedelta(hours=24)
 OVERVIEW_LIMIT = 220  # 시스템 프롬프트 list 항목당 줄거리 표시 길이. 작은 모델이 잘린 list를 그대로 옮기면 caption도 끊겨 보임 → 충분한 길이 + 줄임표.
+LOW_SCRN_THRESHOLD = 250  # KOFIC 일별 박스오피스 9~10위는 보통 재개봉작/막내림 단계 (실측 2026-05-13 자연 갭 253→223). 미만이면 영화관 확인 권장 라벨 부착.
 
 RECOMMEND_KEYWORDS = re.compile(
     r"추천|볼\s*만한|볼만|재밌는|재미있는|박스오피스|인기|상영중|상영\s*중|뭐\s*볼|영화\s*뭐",
@@ -136,8 +137,14 @@ def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
         rank = m.get("rank", "?")
         name = m.get("movieNm", "(제목 없음)")
         open_dt = m.get("openDt", "")
+        try:
+            scrn = int(m.get("scrnCnt", "0"))
+        except (TypeError, ValueError):
+            scrn = 0
 
         line = f"{rank}. {name} (개봉 {open_dt})"
+        if 0 < scrn < LOW_SCRN_THRESHOLD:
+            line += f" [상영관 {scrn}개 — 막내림 가능, 영화관 확인 권장]"
         if meta:
             overview = (meta.get("overview") or "").strip()
             if overview:

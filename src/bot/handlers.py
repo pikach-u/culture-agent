@@ -11,11 +11,23 @@ from src.services import agent
 from src.services import calendar as calendar_service
 from src.services import movie as movie_service
 from src.services import nlcal
+from src.services import performances as performances_service
+from src.services import user_profile
 from src.timeutil import KST
 
 ADD_USAGE = (
     "사용법: /add 제목 | YYYY-MM-DD HH:MM | YYYY-MM-DD HH:MM\n"
     "예: /add 어벤져스 관람 | 2026-05-10 19:00 | 2026-05-10 21:00"
+)
+
+VALID_REGIONS = {
+    "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+    "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+}
+SETLOCATION_USAGE = (
+    "사용법: /setlocation 지역\n"
+    "예: /setlocation 서울\n"
+    f"가능 지역: {', '.join(sorted(VALID_REGIONS))}"
 )
 
 NUMBERED_ITEM = re.compile(r"\[\d+\]")
@@ -27,11 +39,27 @@ CAPTION_LIMIT = 1024
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "안녕하세요! 저는 culture-agent입니다.\n"
-        "영화 추천이 필요하시면 자유롭게 물어봐 주세요.\n"
+        "지금 극장에서 인기 있는 영화를 추천해드려요. \"볼만한 영화\" 처럼 자유롭게 물어봐 주세요.\n"
         "/connect 로 구글 캘린더를 연동하면 빈 시간에 맞춰 추천해드려요.\n"
         "/add 제목 | 시작 | 종료 형식으로 일정을 추가할 수 있어요.\n"
         "/reset 으로 대화 기록을 초기화할 수 있어요.\n"
-        "(Stage 8: 박스오피스 데이터 추천)"
+        "(테스트 중: 박스오피스 막내림 라벨)"
+    )
+
+
+async def setlocation_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(SETLOCATION_USAGE)
+        return
+    region = context.args[0].strip()
+    if region not in VALID_REGIONS:
+        await update.message.reply_text(
+            f"'{region}'은(는) 인식할 수 없는 지역입니다.\n{SETLOCATION_USAGE}"
+        )
+        return
+    user_profile.set_region(update.effective_chat.id, region)
+    await update.message.reply_text(
+        f"지역을 '{region}'(으)로 설정했습니다. 공연·전시 추천 시 가까운 지역을 우선합니다."
     )
 
 
@@ -191,7 +219,8 @@ async def _send_recommendation_part(update: Update, part: str) -> None:
     title_match = TITLE_FROM_ITEM.search(part)
     poster_url = None
     if title_match:
-        poster_url = movie_service.get_poster_url(title_match.group(1).strip())
+        title = title_match.group(1).strip()
+        poster_url = movie_service.get_poster_url(title) or performances_service.get_poster_url(title)
 
     if poster_url:
         caption = part if len(part) <= CAPTION_LIMIT else part[: CAPTION_LIMIT - 4] + "..."

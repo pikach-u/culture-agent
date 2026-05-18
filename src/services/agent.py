@@ -17,7 +17,14 @@ import ollama
 from src.config import OLLAMA_HOST, OLLAMA_MODEL
 from src.services import calendar as calendar_service
 from src.services import movie as movie_service
-from src.services.prompts import BOX_OFFICE_HINT, FREE_SLOTS_HINT, SYSTEM_INSTRUCTION
+from src.services import performances as performances_service
+from src.services import user_profile
+from src.services.prompts import (
+    BOX_OFFICE_HINT,
+    FREE_SLOTS_HINT,
+    PERFORMANCE_HINT,
+    SYSTEM_INSTRUCTION,
+)
 from src.timeutil import KST, WEEKDAYS_KO
 
 NUM_CTX = 8192
@@ -52,7 +59,7 @@ def get_last_assistant_content(chat_id: int) -> str | None:
     return None
 
 
-async def _build_system_prompt(user_message: str = "") -> str:
+async def _build_system_prompt(chat_id: int, user_message: str = "") -> str:
     now = datetime.now(KST)
     weekday = WEEKDAYS_KO[now.weekday()]
     time_str = now.strftime("%Y년 %m월 %d일 %H시 %M분")
@@ -61,6 +68,10 @@ async def _build_system_prompt(user_message: str = "") -> str:
         SYSTEM_INSTRUCTION,
         f"현재 시간 (KST): {time_str} ({weekday}요일)",
     ]
+
+    user_region = user_profile.get_region(chat_id)
+    if user_region:
+        parts.append(f"사용자 지역: {user_region}")
 
     free_slots = await asyncio.to_thread(calendar_service.get_free_slots_text)
     if free_slots:
@@ -72,6 +83,13 @@ async def _build_system_prompt(user_message: str = "") -> str:
         parts.append(box_office)
         parts.append(BOX_OFFICE_HINT)
 
+    performance = await asyncio.to_thread(
+        performances_service.get_performance_text, user_message, user_region
+    )
+    if performance:
+        parts.append(performance)
+        parts.append(PERFORMANCE_HINT)
+
     return "\n".join(parts)
 
 
@@ -79,7 +97,7 @@ async def ask(chat_id: int, user_message: str) -> str:
     history = _history.get(chat_id, [])
     user_dict = {"role": "user", "content": user_message}
     messages: list[dict] = [
-        {"role": "system", "content": await _build_system_prompt(user_message)},
+        {"role": "system", "content": await _build_system_prompt(chat_id, user_message)},
         *history,
         user_dict,
     ]
