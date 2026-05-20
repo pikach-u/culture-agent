@@ -112,11 +112,6 @@
 - SCOPES 변경 시 기존 `token.json` 무효 → 삭제 후 `/connect` 재실행 필수.
 - 일반화: API 권한은 "엔드포인트별 매핑" 직접 확인. "도메인 같으니 같은 scope일 것" 추측 금지.
 
-### LLM API 일반
-
-- Anthropic API ≠ Max 구독 (별개 결제 채널).
-- claude.ai 등급(Free/Pro/Max) ≠ API 모델. API엔 등급 개념 없고, 모델은 코드의 `model=` 한 줄이 결정.
-
 ---
 
 ## 4부. PROGRESS.md 갱신 규칙
@@ -137,7 +132,6 @@ PROGRESS.md는 _작업 일지_. 비대화 방지를 위한 규칙.
 
 - **CLAUDE.md (이 파일)**: 일반 원칙, 다른 Stage에서도 통용되는 함정/교훈.
 - **PROGRESS.md**: Stage별 _프로젝트 특정_ 결정과 검증 결과.
-- 일반화 가능한 내용을 발견하면 PROGRESS가 아니라 CLAUDE.md로.
 
 ### 슬림화 타이밍
 
