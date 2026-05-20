@@ -30,3 +30,4 @@ python main.py
 
 - Python 3.10+ (권장: 3.12)
 - Telegram Bot Token ([BotFather](https://t.me/BotFather)에서 발급)
+- ollama 0.6.2
