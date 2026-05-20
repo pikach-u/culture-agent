@@ -16,9 +16,15 @@ from src.bot.handlers import (
     start_command,
 )
 from src.config import TELEGRAM_BOT_TOKEN
+from src.services import catalog, embedding
 
 
 def main() -> None:
+    # 봇 폴링 전 카탈로그 신선도 보장 — 1주 stale 또는 부재 시 fetch (첫 기동 ~분 단위).
+    catalog.ensure_fresh()
+    # 카탈로그 바뀌었으면 RAG 임베딩 재빌드. 첫 빌드 ~분 단위(bge-m3 300회).
+    embedding.ensure_built()
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("reset", reset_command))

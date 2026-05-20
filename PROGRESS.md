@@ -33,15 +33,43 @@
 
 ## 1. 현재 위치
 
-- **Stage 10 완료 후 dormant** — Phase 2 부활까지 코드 보존, 호출만 비활성화 예정.
-- **박스오피스 scrnCnt 보강 적용** (Stage 11 진입 전 가벼운 보강, 2번 참조).
-- **다음: Stage 11** — TMDB 카탈로그 300편 + OTT 가용성.
+- **Stage 11/12 완료** — 카탈로그 300편 + bge-m3 임베딩 + probe sanity 통과 (사용자 확인).
+- **Stage 13 진입** — OTT 모드 분기 + RAG 통합. mode_router/embedding/agent/catalog/prompts/handlers 전부 갱신. 실측 검증 대기.
 
 ---
 
-## 2. 마지막 작업 (2026-05-14)
+## 2. 마지막 작업 (2026-05-19)
 
-### 도메인 좁히기 + RAG 도입 결정
+### Stage 13 — OTT 모드 분기 + RAG 통합
+
+**의도**: Stage 12 RAG 인덱스를 봇 응답에 연결. 사용자 메시지의 OTT 키워드로 코드 라우팅 → KOFIC(기본) / OTT(RAG).
+
+**구현**:
+
+- `src/services/mode_router.py` 신규 — `detect_mode()` / `extract_ott_filter()`. OTT 트리거 정규식 + 한국 6대 OTT 플랫폼 매핑.
+- `src/services/embedding.py` 확장 — `get_ott_text(query, ott_filter)` LLM list 텍스트 포맷. 필터 시 top_k*2 검색 후 사후 필터.
+- `src/services/catalog.py` 확장 — `get_poster_url(title)` 추가 (handlers fallback 체인용).
+- `src/services/prompts.py` — `OTT_HINT` 추가 (BOX_OFFICE_HINT와 별도, 의도 기반 선별 + OTT 시청 정보 표시 지침).
+- `src/services/agent.py` — `ask()`에서 mode 분기. OTT + 필터 0건 시 LLM 호출 없이 short-circuit "못 찾았어요" 메시지.
+- `src/bot/handlers.py` — 포스터 fallback 체인에 `catalog_service.get_poster_url` 추가. /start 안내문구에 OTT 사용 예시 추가.
+
+**설계 선택**:
+
+- 분기 기본값 = KOFIC (사용자 결정 옵션 A). OTT 키워드 명시 없으면 박스오피스로.
+- 0건 fallback = "못 찾았어요" 직접 응답 (전체 풀 fallback 안 함 — 잘못된 결과보다 솔직).
+- 단순 후처리 필터 — RAG 검색에 OTT 정보는 안 넣고, top_k*2 뽑은 뒤 catalog의 ott_kr로 필터.
+
+**의도된 한계**: 취향 프로파일(Stage 9 재편), 하이브리드 검색(BM25+벡터), 멀티 의도 분해는 후순위.
+
+### Stage 12 — RAG 임베딩 인덱스 (압축)
+
+- bge-m3 1024차원 L2-normalized, numpy + pickle, mtime 비교 신선도.
+- 임베딩 입력: `title_ko | 장르 | overview`.
+- 5쿼리 probe sanity 통과 (복합 쿼리는 약함 — 카탈로그 300편 풀 한계).
+
+---
+
+### 2026-05-14 결정 — 도메인 좁히기 + RAG 도입
 
 **배경**: Stage 10 v2 보정 후에도 모호 질의("볼만한 거")에 작은 모델(gemma4:e2b)이 다중 도메인 균형 추천 실패. 모델 한계 비중 75% 추정.
 
@@ -80,9 +108,9 @@
 
 ---
 
-## 3. 다음 세션 첫 작업 (Stage 11)
+## 3. 다음 세션 첫 작업 (Stage 13 검증 → Stage 9 재편)
 
-### 3-1. 환경 셋팅 (변동 없음)
+### 3-1. 환경 셋팅
 
 ```powershell
 cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
@@ -90,12 +118,12 @@ cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
 python main.py
 ```
 
-### 3-2. Stage 11 결정 필요 항목 (계획 → 승인 → 구현)
+### 3-2. Stage 9(재편) 결정 필요 항목 (Stage 13 검증 후)
 
-1. **TMDB 카탈로그 소스 조합**: `discover/movie`(국가/장르/연도) + `movie/popular` + `movie/top_rated` 어떤 조합으로 300편 채울지. 한국 시장 Top + 최근 5년 화제작 권장.
-2. **OTT 가용성** (`watch/providers`): 한국 95% 정확도(가끔 stale) → 참고용 라벨(Stage 8 평점 패턴).
-3. **캐시 갱신**: 카탈로그 1주, OTT 가용성은 별도 주기 검토.
-4. **저장 형식**: JSON 파일(`data/movies_catalog.json`). SQLite는 Stage 9 시점.
+1. **취향 프로파일 데이터**: 사용자 활동(추천 요청 텍스트 / 캘린더 등록 영화 제목)을 임베딩 평균으로 누적할지, 별도 가중치 정책 둘지.
+2. **저장 위치**: chat_id별 numpy 벡터 1024 + 카운트 → 메모리 vs 파일. 멀티 사용자 누출 방지 고민.
+3. **추천 반영 방식**: query 임베딩 + 취향 평균 가중합(α) → search. α 디폴트.
+4. **새 사용자 / 데이터 부족 케이스**: 활동 < N건이면 취향 미반영.
 
 ### 3-3. 후속 검토 후보
 
@@ -104,8 +132,9 @@ python main.py
 - TMDB 동명영화 disambiguate (Stage 8 미해결, 카탈로그 구축 시 함께)
 - 자연어 캘린더 정식화 (요일 표현 / `dateparser` / 모델 응답에서 제목 추출)
 - TMDB 감독·출연진 결합 (`/movie/{id}/credits`)
-- 벡터 DB 마이그 (numpy → Chroma, 1000편+ 또는 메타 필터 필요 시)
+- 벡터 DB 마이그 (numpy → Chroma 등) — _학습 목적_(인터페이스/검색 알고리즘 비교), 규모 트리거 아님. embedding.search() 인터페이스 좁게 유지해서 교체 단순화.
 - OTT 구독 필터 (`/setotts`, 피드백 후 재검토)
+- 영화 선택 → 지도 연동 → 주변 상영관 예매 링크. 가능하면 예매 가능 시간도. 난이도 낮은 단계부터 (예: 단순 외부 링크 → 영화관 좌표 매칭 → 실시간 시간표).
 
 **Phase 2로 미룸**: 공연/전시 부활(Stage 10 코드 보존 + 후속 검토 후보 일체), 멀티 에이전트 리팩터, 책 등 도메인 추가.
 
@@ -133,9 +162,9 @@ python main.py
 - [x] **Stage 7**: 캘린더 쓰기 (`/add` + 자연어 의도)
 - [x] **Stage 8**: KOFIC + TMDB 병렬 + 포스터 첨부
 - [x] **Stage 10**: 공연/전시 크롤링 — _Phase 2 부활 예정 (dormant)_
-- [ ] **Stage 11 ← 다음**: 박스오피스 scrnCnt 보강 + TMDB 카탈로그 300편 + OTT 가용성
-- [ ] **Stage 12**: RAG 임베딩 인덱스 (bge-m3 + numpy + pickle)
-- [ ] **Stage 13**: OTT 추천 통합 + 모드 분기 + 자연어 RAG 쿼리
+- [x] **Stage 11**: 박스오피스 scrnCnt 보강 + TMDB 카탈로그 300편 + OTT 가용성
+- [x] **Stage 12**: RAG 임베딩 인덱스 (bge-m3 + numpy + pickle)
+- [ ] **Stage 13 ← 검증**: OTT 추천 통합 + 모드 분기 + 자연어 RAG 쿼리
 - [ ] **Stage 9** (재편): 취향 프로파일 — RAG 위에 활동 임베딩 평균. Stage 13 이후.
 - [ ] **Stage 14+** (Phase 2): 멀티 에이전트, 공연 부활, 책 추가
 - [ ] **Stage 15+**: 신규 이벤트 자동 알림
@@ -146,7 +175,16 @@ python main.py
 
 > 이전 Stage DoD는 통과 후 5번 체크리스트로 압축됨.
 
-### Stage 11 DoD — 작성 예정 (Stage 11 진입 시)
+### Stage 13 DoD — OTT 모드 분기 + RAG 통합
+
+- [ ] "볼만한 영화" → KOFIC 박스오피스 list로 응답 (기존 동작 유지, 회귀 X)
+- [ ] "넷플릭스에 SF 있어?" → OTT 분기, 추천 list 안의 영화가 모두 넷플릭스에 시청 가능
+- [ ] "OTT에 뭐 볼만해" → OTT 분기, 필터 없음, RAG top_k 결과 그대로
+- [ ] "디플에서 호러" → 매칭 0건 시 "'Disney Plus'에서 사용자 요청에 맞는 영화를 찾지 못했어요" 안내
+- [ ] OTT 모드 응답에 포스터 정상 첨부 (catalog fallback)
+- [ ] OTT 추천 항목에 시청 가능 OTT 한 줄 표시 ("시청: 넷플릭스, 디즈니+")
+- [ ] /start 안내문구에 OTT 사용 예시 노출
+- [ ] 회귀: Stage 7 캘린더 / Stage 8 박스오피스 / Stage 11 카탈로그 / Stage 12 임베딩 정상
 
 ---
 
@@ -178,13 +216,30 @@ python main.py
 
 - 어댑터 패턴(인터파크 NEXT_DATA + 예스24 BS4 + registry 병렬/24h 캐시) + venue→region 매핑 + `/setlocation` + v2 보정(dedup·status_label·`_PER_GENRE_LIMIT=3`). 모호 질의 진단으로 모델 한계 75% 추정 → **도메인 좁히기로 해결**(위 2번). Phase 2까지 dormant.
 
-### Stage 11~13 — RAG + OTT (예정, 2026-05-14 결정)
+### Stage 11 — TMDB 300편 카탈로그 (2026-05-19)
 
-- 카탈로그: TMDB 300편, OTT 가용성 결합, 1주 캐시.
-- 임베딩: ollama bge-m3, numpy + pickle (1024×300 = ~1.2MB).
-- 모드 분기: 코드 기반 키워드 정규식. LLM Router는 작은 모델 한계 재현 risk → 미채택.
-- OTT 필터: 미도입(전체 OTT 표시).
-- 벡터 DB: Stage 12 진입 시 카탈로그 실측 후 결정. 300편이면 numpy 충분.
+- 소스: popular 5p + top_rated 5p + discover KR 5년 5p → dedup, 부족분 top_rated 추가 페이지(MAX 15p) 보충. TARGET_SIZE=300.
+- OTT: `/movie/{id}/watch/providers` 4 worker 병렬, KR flatrate만 저장.
+- 캐시: `data/movies_catalog.json` + `fetched_at` 메타, 1주 TTL.
+- 장르: `/genre/movie/list` 한국어 매핑 1회 캐시.
+- Stage 8 `movie.py` (KOFIC 10편)와 독립 — 박스오피스용은 별도 모듈 유지.
+
+### Stage 12 — RAG 임베딩 인덱스 (2026-05-19)
+
+- 임베딩 모델: ollama bge-m3 (1024차원, L2-normalized → cosine = dot).
+- 입력 텍스트: `title_ko | 장르 | overview` 결합.
+- 저장: `data/movies_embeddings.npy` + `.pkl` (id 매핑). 1024×300 ≈ 1.2MB.
+- 신선도: 임베딩 npy mtime vs 카탈로그 json mtime 비교.
+- 인터페이스(`ensure_built` / `search`) 좁게 유지 — 추후 벡터 DB 학습 마이그 시 교체 단순화.
+
+### Stage 13 — OTT 모드 분기 + RAG 통합 (2026-05-19)
+
+- 모드 분기: 코드 기반 키워드 정규식(`mode_router.py`). LLM Router는 작은 모델 한계 재현 risk → 미채택.
+- 기본값: OTT 키워드 없으면 KOFIC (사용자 결정, 옵션 A).
+- OTT 필터: 사후 처리 — `search(top_k*2)` → catalog의 ott_kr로 필터 → top_k 컷.
+- 0건 처리: 사용자가 OTT 명시했는데 매칭 0건이면 LLM 호출 없이 직접 "못 찾았어요" (전체 풀 fallback 안 함).
+- `OTT_HINT` 별도 hint — `BOX_OFFICE_HINT`와 분리 유지 (학습 단계 명확성 우선, 공통화는 패턴 굳어진 후).
+- 포스터: `catalog.get_poster_url` handlers fallback 체인에 추가 (movie → catalog → performances).
 
 ---
 
@@ -196,8 +251,9 @@ python main.py
 - `src/bot/handlers.py` — 명령어 + `ai_message` + 추천 분리/포스터/자연어 캘린더
 - `src/services/agent.py` — Ollama AsyncClient + `_build_system_prompt(chat_id, user_message)`
 - `src/services/calendar.py` (Stage 6+7), `src/services/movie.py` (Stage 8), `src/services/nlcal.py` (Stage 7+)
+- `src/services/catalog.py` (Stage 11), `src/services/embedding.py` (Stage 12), `src/services/mode_router.py` (Stage 13)
 - `src/services/user_profile.py` — chat_id별 in-memory 메타
-- `src/services/prompts.py` — `SYSTEM_INSTRUCTION` + `FREE_SLOTS_HINT` + `BOX_OFFICE_HINT` + `PERFORMANCE_HINT`
+- `src/services/prompts.py` — `SYSTEM_INSTRUCTION` + `FREE_SLOTS_HINT` + `BOX_OFFICE_HINT` + `OTT_HINT` + `PERFORMANCE_HINT`
 
 **Phase 2까지 dormant** (코드 보존, 호출 비활성화 예정):
 

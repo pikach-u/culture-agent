@@ -16,12 +16,15 @@ import ollama
 
 from src.config import OLLAMA_HOST, OLLAMA_MODEL
 from src.services import calendar as calendar_service
+from src.services import embedding
+from src.services import mode_router
 from src.services import movie as movie_service
 from src.services import performances as performances_service
 from src.services import user_profile
 from src.services.prompts import (
     BOX_OFFICE_HINT,
     FREE_SLOTS_HINT,
+    OTT_HINT,
     PERFORMANCE_HINT,
     SYSTEM_INSTRUCTION,
 )
@@ -59,7 +62,11 @@ def get_last_assistant_content(chat_id: int) -> str | None:
     return None
 
 
-async def _build_system_prompt(chat_id: int, user_message: str = "") -> str:
+async def _build_system_prompt(
+    chat_id: int,
+    user_message: str = "",
+    ott_text: str | None = None,
+) -> str:
     now = datetime.now(KST)
     weekday = WEEKDAYS_KO[now.weekday()]
     time_str = now.strftime("%Y년 %m월 %d일 %H시 %M분")
@@ -78,26 +85,45 @@ async def _build_system_prompt(chat_id: int, user_message: str = "") -> str:
         parts.append(free_slots)
         parts.append(FREE_SLOTS_HINT)
 
-    box_office = await asyncio.to_thread(movie_service.get_box_office_text, user_message)
-    if box_office:
-        parts.append(box_office)
-        parts.append(BOX_OFFICE_HINT)
+    # Stage 13 모드 분기 — OTT 모드면 RAG list 주입, 아니면 기존 KOFIC 경로.
+    if ott_text:
+        parts.append(ott_text)
+        parts.append(OTT_HINT)
+    else:
+        box_office = await asyncio.to_thread(movie_service.get_box_office_text, user_message)
+        if box_office:
+            parts.append(box_office)
+            parts.append(BOX_OFFICE_HINT)
 
-    performance = await asyncio.to_thread(
-        performances_service.get_performance_text, user_message, user_region
-    )
-    if performance:
-        parts.append(performance)
-        parts.append(PERFORMANCE_HINT)
+    # Phase 2까지 dormant — 도메인 좁히기 결정(2026-05-14)에 따라 공연/전시 컨텍스트 주입 차단.
+    # Phase 2 진입 시 아래 6줄 주석 해제. import + performances_service.get_poster_url(handlers)는 무비용 유지.
+    # performance = await asyncio.to_thread(
+    #     performances_service.get_performance_text, user_message, user_region
+    # )
+    # if performance:
+    #     parts.append(performance)
+    #     parts.append(PERFORMANCE_HINT)
 
     return "\n".join(parts)
 
 
 async def ask(chat_id: int, user_message: str) -> str:
+    # Stage 13 모드 분기 — OTT 모드 + 필터 매칭 0건이면 LLM 호출 없이 short-circuit.
+    mode = mode_router.detect_mode(user_message)
+    ott_text: str | None = None
+    if mode == "ott":
+        ott_filter = mode_router.extract_ott_filter(user_message)
+        ott_text = await asyncio.to_thread(
+            embedding.get_ott_text, user_message, ott_filter or None
+        )
+        if ott_text is None and ott_filter:
+            label = ", ".join(ott_filter)
+            return f"'{label}'에서 사용자 요청에 맞는 영화를 찾지 못했어요. 다른 키워드로 시도해보세요."
+
     history = _history.get(chat_id, [])
     user_dict = {"role": "user", "content": user_message}
     messages: list[dict] = [
-        {"role": "system", "content": await _build_system_prompt(chat_id, user_message)},
+        {"role": "system", "content": await _build_system_prompt(chat_id, user_message, ott_text)},
         *history,
         user_dict,
     ]

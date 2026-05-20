@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 from src.services import agent
 from src.services import calendar as calendar_service
+from src.services import catalog as catalog_service
 from src.services import movie as movie_service
 from src.services import nlcal
 from src.services import performances as performances_service
@@ -39,11 +40,12 @@ CAPTION_LIMIT = 1024
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "안녕하세요! 저는 culture-agent입니다.\n"
-        "지금 극장에서 인기 있는 영화를 추천해드려요. \"볼만한 영화\" 처럼 자유롭게 물어봐 주세요.\n"
+        "극장 영화: \"볼만한 영화\" 같이 자유롭게 물어봐 주세요.\n"
+        "OTT 영화: \"넷플릭스에 SF 있어?\" 처럼 플랫폼을 명시하거나 \"OTT에 뭐 볼만해\" 라고 물어봐 주세요.\n"
         "/connect 로 구글 캘린더를 연동하면 빈 시간에 맞춰 추천해드려요.\n"
         "/add 제목 | 시작 | 종료 형식으로 일정을 추가할 수 있어요.\n"
         "/reset 으로 대화 기록을 초기화할 수 있어요.\n"
-        "(테스트 중: 박스오피스 막내림 라벨)"
+        "(테스트 중: Stage 13 OTT 모드 분기 + RAG 통합)"
     )
 
 
@@ -215,12 +217,24 @@ def _resolve_title_for_calendar(chat_id: int, text: str) -> str | None:
 
 
 async def _send_recommendation_part(update: Update, part: str) -> None:
-    """추천 항목 1개 전송. TMDB 포스터 캐시에 영화명 매칭되면 reply_photo, 아니면 reply_text."""
+    """추천 항목 1개 전송. TMDB 포스터 캐시에 영화명 매칭되면 reply_photo, 아니면 reply_text.
+
+    막내림 라벨 영화면 caption/text 끝에 라벨 자동 부착 — LLM이 prompt hint 무시하는 한계 보강.
+    """
     title_match = TITLE_FROM_ITEM.search(part)
     poster_url = None
+    label = None
     if title_match:
         title = title_match.group(1).strip()
-        poster_url = movie_service.get_poster_url(title) or performances_service.get_poster_url(title)
+        poster_url = (
+            movie_service.get_poster_url(title)
+            or catalog_service.get_poster_url(title)
+            or performances_service.get_poster_url(title)
+        )
+        label = movie_service.get_low_scrn_label(title)
+
+    if label:
+        part = f"{part}\n{label}"
 
     if poster_url:
         caption = part if len(part) <= CAPTION_LIMIT else part[: CAPTION_LIMIT - 4] + "..."

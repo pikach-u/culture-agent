@@ -5,6 +5,8 @@
   추천 키워드 매칭 시 KOFIC + TMDB 결합 텍스트 반환. 시스템 프롬프트 주입용.
 - get_poster_url(title) -> str | None
   캐시된 영화 제목 → TMDB 포스터 풀 URL. handlers.py가 reply_photo 결정에 사용.
+- get_low_scrn_label(title) -> str | None
+  scrnCnt < LOW_SCRN_THRESHOLD 영화 → 막내림 안내 라벨. handlers.py가 caption 후처리에 사용.
 
 KOFIC: 일별 박스오피스 (어제 기준).
 TMDB: KOFIC 영화명으로 search/movie 한국어 호출 → 평점/줄거리/포스터 path.
@@ -39,6 +41,7 @@ RECOMMEND_KEYWORDS = re.compile(
 
 _cache_text: str | None = None
 _cache_posters: dict[str, str] = {}
+_cache_labels: dict[str, str] = {}  # 영화명 → 막내림 안내 라벨. handlers가 caption에 후처리로 부착. 작은 모델이 prompt hint 무시해서 코드 보장 경로.
 _cache_at: datetime | None = None
 
 
@@ -53,9 +56,9 @@ def get_box_office_text(user_message: str) -> str | None:
     if cached is not None:
         return cached
 
-    text, posters = _fetch_and_format()
+    text, posters, labels = _fetch_and_format()
     if text is not None:
-        _set_cache(text, posters)
+        _set_cache(text, posters, labels)
         return text
 
     # 호출 실패 + 만료된 캐시가 남아있으면 stale 반환 — 시연 중 외부 API 장애 보호.
@@ -68,6 +71,14 @@ def get_box_office_text(user_message: str) -> str | None:
 def get_poster_url(title: str) -> str | None:
     """캐시된 영화 제목 → TMDB 포스터 풀 URL. 없으면 None."""
     return _cache_posters.get(title)
+
+
+def get_low_scrn_label(title: str) -> str | None:
+    """캐시된 영화 제목 → 막내림 안내 라벨. 라벨 대상 아니거나 캐시 미스면 None.
+
+    LLM이 prompt hint 무시하고 라벨을 응답에 안 옮기는 게 확정 — handlers가 caption 후처리로 부착.
+    """
+    return _cache_labels.get(title)
 
 
 def match_cached_title(text: str) -> str | None:
@@ -91,14 +102,15 @@ def _get_cached_text() -> str | None:
     return _cache_text
 
 
-def _set_cache(text: str, posters: dict[str, str]) -> None:
-    global _cache_text, _cache_posters, _cache_at
+def _set_cache(text: str, posters: dict[str, str], labels: dict[str, str]) -> None:
+    global _cache_text, _cache_posters, _cache_labels, _cache_at
     _cache_text = text
     _cache_posters = posters
+    _cache_labels = labels
     _cache_at = datetime.now(KST)
 
 
-def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
+def _fetch_and_format() -> tuple[str | None, dict[str, str], dict[str, str]]:
     target_dt = (datetime.now(KST) - timedelta(days=1)).strftime("%Y%m%d")
     try:
         response = requests.get(
@@ -110,15 +122,15 @@ def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
         data = response.json()
     except requests.RequestException as e:
         print(f"[movie] KOFIC 요청 실패: {type(e).__name__}: {e}")
-        return None, {}
+        return None, {}, {}
     except ValueError as e:
         print(f"[movie] KOFIC JSON 파싱 실패: {e}")
-        return None, {}
+        return None, {}, {}
 
     movies = data.get("boxOfficeResult", {}).get("dailyBoxOfficeList", [])
     if not movies:
         print(f"[movie] KOFIC 응답에 영화 list 없음 (대상일 {target_dt})")
-        return None, {}
+        return None, {}, {}
 
     titles = [m.get("movieNm", "") for m in movies]
     if TMDB_API_KEY:
@@ -133,6 +145,7 @@ def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
         header = f"현재 한국 박스오피스 순위 (KOFIC 일별 1~10위, 어제 {target_dt} 기준):"
     lines = [header]
     posters: dict[str, str] = {}
+    labels: dict[str, str] = {}
     for m, meta in zip(movies, metas):
         rank = m.get("rank", "?")
         name = m.get("movieNm", "(제목 없음)")
@@ -142,9 +155,11 @@ def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
         except (TypeError, ValueError):
             scrn = 0
 
-        line = f"{rank}. {name} (개봉 {open_dt})"
         if 0 < scrn < LOW_SCRN_THRESHOLD:
-            line += f" [상영관 {scrn}개 — 막내림 가능, 영화관 확인 권장]"
+            # list 텍스트에는 라벨 안 넣음 — LLM이 무시하는 게 확정. handlers가 후처리로 caption에 부착.
+            labels[name] = f"[상영관 {scrn}개 — 막내림 가능, 영화관 확인 권장]"
+
+        line = f"{rank}. {name} (개봉 {open_dt})"
         if meta:
             overview = (meta.get("overview") or "").strip()
             if overview:
@@ -158,7 +173,7 @@ def _fetch_and_format() -> tuple[str | None, dict[str, str]]:
                 posters[name] = f"{TMDB_IMAGE_BASE}{poster}"
         lines.append(line)
 
-    return "\n".join(lines), posters
+    return "\n".join(lines), posters, labels
 
 
 def _tmdb_search(title: str) -> dict | None:
