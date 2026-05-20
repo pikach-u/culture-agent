@@ -17,7 +17,6 @@
 
 **환경**:
 
-- 작업 경로: `C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent`
 - 플랫폼: Windows 10, PowerShell
 - 언어: Python 3.12.3
 
