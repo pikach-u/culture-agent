@@ -30,4 +30,3 @@ python main.py
 
 - Python 3.10+ (권장: 3.12)
 - Telegram Bot Token ([BotFather](https://t.me/BotFather)에서 발급)
-- Anthropic API Key ([console.anthropic.com](https://console.anthropic.com)에서 발급, Stage 2 이후)
