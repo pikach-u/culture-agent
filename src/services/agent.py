@@ -43,10 +43,12 @@ TIMEOUT_MESSAGE = "응답이 너무 오래 걸려서 중단했습니다. 다시 
 
 _client = ollama.AsyncClient(host=OLLAMA_HOST)
 _history: dict[int, list[dict]] = {}
+_last_mode: dict[int, str] = {}  # Stage 13.1 — 멀티턴 모드 sticky
 
 
 def reset(chat_id: int) -> None:
     _history.pop(chat_id, None)
+    _last_mode.pop(chat_id, None)
 
 
 def get_last_assistant_content(chat_id: int) -> str | None:
@@ -108,17 +110,31 @@ async def _build_system_prompt(
 
 
 async def ask(chat_id: int, user_message: str) -> str:
-    # Stage 13 모드 분기 — OTT 모드 + 필터 매칭 0건이면 LLM 호출 없이 short-circuit.
-    mode = mode_router.detect_mode(user_message)
+    # Stage 13.1 모드 결정: 명시 키워드 → sticky → 기본 KOFIC.
+    explicit = mode_router.detect_mode(user_message)
+    if explicit is not None:
+        mode = explicit
+    else:
+        mode = _last_mode.get(chat_id, "kofic")
+
+    # Stage 13 OTT 분기 — 0건이면 LLM 호출 없이 short-circuit.
     ott_text: str | None = None
     if mode == "ott":
         ott_filter = mode_router.extract_ott_filter(user_message)
+        recent_first = mode_router.detect_temporal(user_message)
         ott_text = await asyncio.to_thread(
-            embedding.get_ott_text, user_message, ott_filter or None
+            embedding.get_ott_text,
+            user_message,
+            ott_filter or None,
+            10,
+            recent_first,
         )
         if ott_text is None and ott_filter:
+            _last_mode[chat_id] = mode
             label = ", ".join(ott_filter)
             return f"'{label}'에서 사용자 요청에 맞는 영화를 찾지 못했어요. 다른 키워드로 시도해보세요."
+
+    _last_mode[chat_id] = mode
 
     history = _history.get(chat_id, [])
     user_dict = {"role": "user", "content": user_message}

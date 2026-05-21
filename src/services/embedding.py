@@ -98,23 +98,30 @@ def get_ott_text(
     query: str,
     ott_filter: list[str] | None = None,
     top_k: int = 10,
+    recent_first: bool = False,
 ) -> str | None:
     """Stage 13 OTT 모드 — RAG top_k → LLM list 텍스트.
 
     ott_filter 있으면 사후 처리(top_k*2 검색 → 필터 → top_k 컷). 0건이면 None.
+    recent_first=True면 결과를 year 내림차순 재정렬 (year=None은 후순위).
+    Stage 13.1 — 임베딩이 '최신' 같은 시간 의도를 못 잡는 한계 보완.
     """
-    initial_k = top_k * 2 if ott_filter else top_k
+    # 시간 정렬 시 풀을 더 넓혀 신작 후보 확보. 필터 + 시간 정렬 시 더 여유.
+    initial_k = top_k * 3 if recent_first else (top_k * 2 if ott_filter else top_k)
     results = search(query, top_k=initial_k)
     if ott_filter:
         results = [m for m in results if _has_any_ott(m, ott_filter)]
-        results = results[:top_k]
+    if recent_first:
+        results.sort(key=lambda m: m.get("year") or 0, reverse=True)
+    results = results[:top_k]
     if not results:
         return None
 
+    order_label = "개봉연도 내림차순" if recent_first else "의미 유사도 순"
     if ott_filter:
-        header = f"[OTT 추천 후보 — {', '.join(ott_filter)} 매칭, 의미 유사도 순]"
+        header = f"[OTT 추천 후보 — {', '.join(ott_filter)} 매칭, {order_label}]"
     else:
-        header = "[OTT 추천 후보 — 의미 유사도 순]"
+        header = f"[OTT 추천 후보 — {order_label}]"
     lines = [header]
     for i, m in enumerate(results, 1):
         title = m.get("title_ko") or m.get("title_en") or "(제목 없음)"

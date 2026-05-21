@@ -45,7 +45,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/connect 로 구글 캘린더를 연동하면 빈 시간에 맞춰 추천해드려요.\n"
         "/add 제목 | 시작 | 종료 형식으로 일정을 추가할 수 있어요.\n"
         "/reset 으로 대화 기록을 초기화할 수 있어요.\n"
-        "(테스트 중: Stage 13 OTT 모드 분기 + RAG 통합)"
+        "(테스트 중: Stage 13.1 — 멀티턴 모드 sticky + 시간 키워드 보강 + 중복 방어)"
     )
 
 
@@ -148,10 +148,19 @@ async def ai_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     answer = await agent.ask(chat_id, text)
 
     if len(NUMBERED_ITEM.findall(answer)) >= 2:
+        seen_titles: set[str] = set()
         for part in SPLIT_BEFORE_ITEM.split(answer):
             part = part.strip()
-            if part:
-                await _send_recommendation_part(update, part)
+            if not part:
+                continue
+            # Stage 13.1 응답 내 중복 방어 — LLM이 같은 영화를 두 번 뱉어도 한 번만 전송.
+            tm = TITLE_FROM_ITEM.search(part)
+            if tm:
+                title = tm.group(1).strip()
+                if title in seen_titles:
+                    continue
+                seen_titles.add(title)
+            await _send_recommendation_part(update, part)
     else:
         await update.message.reply_text(answer)
 

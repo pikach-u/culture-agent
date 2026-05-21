@@ -32,21 +32,46 @@
 
 ## 1. 현재 위치
 
-- **Stage 11/12 완료** — 카탈로그 300편 + bge-m3 임베딩 + probe sanity 통과 (사용자 확인).
-- **Stage 13 진입** — OTT 모드 분기 + RAG 통합. mode_router/embedding/agent/catalog/prompts/handlers 전부 갱신. 실측 검증 대기.
+- **Stage 11/12/13 완료** — 카탈로그 + 임베딩 + OTT 모드 분기 동작 확인 (사용자 검증).
+- **Stage 13.1 보강 패치** — 멀티턴 sticky · "최신" 시간 정렬 · 중복 방어. 실측 검증 대기.
 
 ---
 
 ## 2. 마지막 작업 (2026-05-19)
 
-### Stage 13 — OTT 모드 분기 + RAG 통합
+### Stage 13.1 보강 패치 — 멀티턴 sticky · 시간 정렬 · 중복 방어
+
+**의도**: Stage 13 실측에서 발견된 3가지 약점 — (1) "OTT 최신작" 쿼리에 1999/2003 영화 추천(임베딩 시간 의도 미반영), (2) 직전 OTT 턴인데 "최근 한달" 같은 후속 메시지가 KOFIC으로 빠짐(컨텍스트 무시), (3) 같은 응답 안에서 영화 중복.
+
+**구현**:
+
+- `mode_router.py`: `detect_mode()` 시그니처 변경 → `"ott" | "kofic" | None`. 명시 키워드 없으면 None. `KOFIC_TRIGGER`(극장/상영중/영화관/박스오피스) + `detect_temporal(text)` 추가.
+- `agent.py`: `_last_mode: dict[chat_id, str]` 모듈 globals. 모드 우선순위 = 명시 키워드 > sticky > 기본 KOFIC. `reset()`에서 같이 삭제. `detect_temporal` True면 `get_ott_text(recent_first=True)`.
+- `embedding.py`: `get_ott_text(..., recent_first=False)` — True면 `top_k*3` 검색 후 `year` 내림차순 재정렬. header 라벨도 "개봉연도 내림차순" 노출.
+- `prompts.py`: SYSTEM_INSTRUCTION에 "같은 영화 두 번 추천 금지, 6~8편 모두 다른 영화" 한 줄.
+- `handlers.py`: 추천 응답 분리 시 `[N] 제목` 중복 dedup (방어선).
+- `tmp/probe_catalog_dup.py`: 카탈로그 측 한국어 제목 중복 진단.
+
+**설계 선택**:
+
+- mode*router의 None 반환은 \_agent가 sticky로 메우는* 신호. 라우터 자체는 결정 안 함 (단일 책임).
+- KOFIC 강제 키워드(`극장|상영중|영화관|박스오피스`)는 OTT sticky를 깨는 explicit override.
+- 시간 정렬은 OTT 모드에만 — KOFIC은 어차피 어제 박스오피스라 시간 의미 없음.
+- 임베딩 자체엔 안 손대고 _사후 처리_ — Stage 4 context injection 피벗과 같은 결.
+
+**의도된 한계**: "한 달 사이", "이번 주" 같이 *구체적 범위*가 들어간 쿼리는 still 단순 year sort. 정밀한 범위 필터는 메타 인덱스 보강 후 (후순위).
+
+### Stage 13 — OTT 모드 분기 + RAG 통합 (압축)
+
+- mode_router(코드 키워드) + embedding.get_ott_text + agent ott_text 분기 + catalog.get_poster_url + OTT_HINT.
+- 기본값 = KOFIC. 0건이면 LLM 호출 없이 short-circuit.
 
 **의도**: Stage 12 RAG 인덱스를 봇 응답에 연결. 사용자 메시지의 OTT 키워드로 코드 라우팅 → KOFIC(기본) / OTT(RAG).
 
 **구현**:
 
 - `src/services/mode_router.py` 신규 — `detect_mode()` / `extract_ott_filter()`. OTT 트리거 정규식 + 한국 6대 OTT 플랫폼 매핑.
-- `src/services/embedding.py` 확장 — `get_ott_text(query, ott_filter)` LLM list 텍스트 포맷. 필터 시 top_k*2 검색 후 사후 필터.
+- `src/services/embedding.py` 확장 — `get_ott_text(query, ott_filter)` LLM list 텍스트 포맷. 필터 시 top_k\*2 검색 후 사후 필터.
 - `src/services/catalog.py` 확장 — `get_poster_url(title)` 추가 (handlers fallback 체인용).
 - `src/services/prompts.py` — `OTT_HINT` 추가 (BOX_OFFICE_HINT와 별도, 의도 기반 선별 + OTT 시청 정보 표시 지침).
 - `src/services/agent.py` — `ask()`에서 mode 분기. OTT + 필터 0건 시 LLM 호출 없이 short-circuit "못 찾았어요" 메시지.
@@ -56,7 +81,7 @@
 
 - 분기 기본값 = KOFIC (사용자 결정 옵션 A). OTT 키워드 명시 없으면 박스오피스로.
 - 0건 fallback = "못 찾았어요" 직접 응답 (전체 풀 fallback 안 함 — 잘못된 결과보다 솔직).
-- 단순 후처리 필터 — RAG 검색에 OTT 정보는 안 넣고, top_k*2 뽑은 뒤 catalog의 ott_kr로 필터.
+- 단순 후처리 필터 — RAG 검색에 OTT 정보는 안 넣고, top_k\*2 뽑은 뒤 catalog의 ott_kr로 필터.
 
 **의도된 한계**: 취향 프로파일(Stage 9 재편), 하이브리드 검색(BM25+벡터), 멀티 의도 분해는 후순위.
 
@@ -112,7 +137,6 @@
 ### 3-1. 환경 셋팅
 
 ```powershell
-cd C:\Users\ziwon\OneDrive\Desktop\claude\culture-agent
 .\venv\Scripts\Activate.ps1
 python main.py
 ```
@@ -174,16 +198,14 @@ python main.py
 
 > 이전 Stage DoD는 통과 후 5번 체크리스트로 압축됨.
 
-### Stage 13 DoD — OTT 모드 분기 + RAG 통합
+### Stage 13.1 DoD — 보강 패치
 
-- [ ] "볼만한 영화" → KOFIC 박스오피스 list로 응답 (기존 동작 유지, 회귀 X)
-- [ ] "넷플릭스에 SF 있어?" → OTT 분기, 추천 list 안의 영화가 모두 넷플릭스에 시청 가능
-- [ ] "OTT에 뭐 볼만해" → OTT 분기, 필터 없음, RAG top_k 결과 그대로
-- [ ] "디플에서 호러" → 매칭 0건 시 "'Disney Plus'에서 사용자 요청에 맞는 영화를 찾지 못했어요" 안내
-- [ ] OTT 모드 응답에 포스터 정상 첨부 (catalog fallback)
-- [ ] OTT 추천 항목에 시청 가능 OTT 한 줄 표시 ("시청: 넷플릭스, 디즈니+")
-- [ ] /start 안내문구에 OTT 사용 예시 노출
-- [ ] 회귀: Stage 7 캘린더 / Stage 8 박스오피스 / Stage 11 카탈로그 / Stage 12 임베딩 정상
+- [ ] "OTT에서 최신개봉작 추천" → 결과가 year 내림차순, 1999/2003 같은 오래된 영화 거의 없음
+- [ ] OTT 모드에서 후속 질문 "최근 한 달 사이 개봉한 거" → sticky로 OTT 유지, KOFIC 빠지지 않음
+- [ ] KOFIC 강제 키워드 "극장에서 볼만한" → 직전이 OTT여도 KOFIC로 override
+- [ ] 같은 응답 안에서 영화 중복 안 보임 (prompts + handlers dedup 작동)
+- [ ] `python -m tmp.probe_catalog_dup` 실행 시 카탈로그 측 중복 보고 (LLM 측 vs 카탈로그 측 구분)
+- [ ] 회귀: Stage 13 기본 동작(KOFIC 박스오피스 / OTT 필터 / 0건 short-circuit / 포스터) 유지
 
 ---
 
@@ -239,6 +261,13 @@ python main.py
 - 0건 처리: 사용자가 OTT 명시했는데 매칭 0건이면 LLM 호출 없이 직접 "못 찾았어요" (전체 풀 fallback 안 함).
 - `OTT_HINT` 별도 hint — `BOX_OFFICE_HINT`와 분리 유지 (학습 단계 명확성 우선, 공통화는 패턴 굳어진 후).
 - 포스터: `catalog.get_poster_url` handlers fallback 체인에 추가 (movie → catalog → performances).
+
+### Stage 13.1 — 보강 패치 (2026-05-19)
+
+- 모드 결정 우선순위: 명시 키워드 > chat_id별 sticky > 기본 KOFIC. mode_router는 None 반환, agent가 sticky 처리.
+- KOFIC 강제 키워드(`극장|상영중|영화관|박스오피스`)는 OTT sticky를 깨는 explicit override.
+- 시간 정렬: "최신/신작/요즘" 키워드 감지 시 `get_ott_text(recent_first=True)` — top_k\*3 검색 후 year 내림차순. 임베딩 한계 사후 보완.
+- 중복 방어: SYSTEM_INSTRUCTION "같은 영화 두 번 X" + handlers 응답 내 [N] 제목 dedup. 카탈로그 측 진단은 `tmp/probe_catalog_dup.py`.
 
 ---
 
